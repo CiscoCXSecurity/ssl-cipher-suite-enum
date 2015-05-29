@@ -1,0 +1,79 @@
+
+2014-10-15 ssl-cipher-suite-enum v1.0.0
+
+* Timeout can now be set from command line
+* Added some newer cipher suites
+* Added check for RC4 bias issue
+* Added check for POODLE issue
+
+2013-02-13 ssl-cipher-suite-enum v0.9.9
+
+* 10 second timeout for recv to avoid hanging
+* Aborts testing after 5 connection failures - to avoid looping
+* Bug fix: --ftp option improvements (for AUTH SSL)
+* Bug fix: Now reports correct results when multiple hosts are scanned
+* Fixed some typos
+* Bug fix: Avoid looping if SSLv2 close connection early
+
+2012-10-25 ssl-cipher-suite-enum v0.9.4
+
+* Added --ftp option to enumerate cipher suites supported by FTP servers
+  via (AUTH SSL).
+
+2012-10-10 ssl-cipher-suite-enum v0.9.3
+
+* Added --persist option.  Some servers close connection immediately
+  which we misinterpret as that SSL protocol not being supported.
+  This option can be used enumerate cipher suites when this happens.
+
+2012-08-03 ssl-cipher-suite-enum v0.9.2
+
+* Bug fix: Hanging when server closes connection
+* Bug fix: Missing some SSLv3 cipher suites.  Simplified probe to fix.
+
+2012-07-19 ssl-cipher-suite-enum v0.9.1
+
+* Bug fix: better reporting of NULL ciphers
+* Bug fix: handles SSLv2 servers that off cipher suites client didn't offer
+
+2012-07-18 ssl-cipher-suite-enum v0.9
+
+* Changed program name in some places
+* Added --rdp and --smtp for testing SSL over RDP and SMTP
+* Weaknesses are listed next to each preferred cipher suite
+* Bug fix: Anon DH cipher suites flagged more reliably
+* No longer reports preferred cipher suite for SSLv2 - there is
+  no such thing in SSLv2 as the client chooses
+
+2012-07-08 ssl-cipher-suite-enum v0.4
+
+* Added "--outfile file" option to log output to file
+* Added options --sslv2 --sslv2 --tlsv1 --tlsv1_1 --tlsv1_2 to test only
+  the required SSL protocols
+* Added "--file file" option to read targets from a file
+* Added "--rate n" option to limit scan speed to n connection/sec
+* Prints stats on connections / second
+* Output is more greppable
+* Identification of cipher suites using weak symmertic encryption
+* Identification of cipher suites using null encryption
+* Identification of cipher suites not providing forward secrecy
+* Identification of cipher suites vulnerable to BEAST attack
+* Identification of cipher suites using SSLv2
+* Identification of cipher suites anonymous Diffie Hellman key exchange
+* Added human-readable summary sections for weaknesses identified
+* Bug fix: Servers returning "0x0000" dealt with correctly
+* Altered way port number is specified from "ip port" to "ip:port"
+* More verbose help message
+* Beautified output
+* Improved SSLv2 probe
+* Identifies preferred cipher suite
+
+2012-07-01 ssl-cipher-suite-enum v0.2
+
+* Lowercased cipher suite (hex) numbers for consistency.
+* Check hostname resolves.  Only result it once - not once per TCP connection
+* Print out resolved IP address
+* Change order that protocols are tested in: SSLv2 -> TLSv1.2
+* Prints total number of supported cipher suites for each proto
+* Print runtime, end time
+* 4 x speedup by grouping unpopular cipher suites into a single client hello
