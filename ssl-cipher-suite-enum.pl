@@ -797,12 +797,8 @@ sub scan_host {
 			my $cc_chunk_size = 10;
 			my $protocol_supported = 1;
 			ciphersuite: while (scalar @cc_todo_in_groups) {
-				my @cc_chunk = ();
-				chunk: for (1..$cc_chunk_size) {
-					if (scalar @cc_todo_in_groups) {
-						push @cc_chunk, pop @cc_todo_in_groups;
-					}
-				}
+				my @cc_chunk = splice(@cc_todo_in_groups, 0, $cc_chunk_size);
+				
 				if (scalar @cc_chunk) {
 					my $supported = test_v3_ciphersuites($ip, $port, $protocol, @cc_chunk);
 					if (length($supported) == 4) {
@@ -1026,30 +1022,55 @@ sub get_client_hello_v2 {
 	return $string;
 }
 
+sub get_len_and_hex {
+	my $lensize = shift;
+	my $hex = join("", @_);
+	return (
+		sprintf("%0*x", 2*$lensize, length($hex)/2),
+		$hex
+	);
+}
+
+
 sub get_client_hello_v3 {
 	my ($protocol, @ciphersuites_hex) = @_;
-	my $ciphersuites_hex = join("", @ciphersuites_hex, "00", "ff");
 	my @packet_hex;
-	push @packet_hex, qw(16); # content type: handshake (22)
-	push @packet_hex, $protocol;
-	#push @packet_hex, sprintf("%04x", 0x2B + 6 + length($ciphersuites_hex) / 2);
-	push @packet_hex, sprintf("%04x", 0x2B + 1 + length($ciphersuites_hex) / 2);
-	push @packet_hex, qw(01); # client hello
-	#push @packet_hex, sprintf("%06x", 0x27 + 6 + length($ciphersuites_hex) / 2);
-	push @packet_hex, sprintf("%06x", 0x27 + 1 + length($ciphersuites_hex) / 2);
-	push @packet_hex, $protocol;
-	push @packet_hex, qw(4f de d1 b9); # time
-	push @packet_hex, qw(e4 60 78 36 ad fb d6  26 bb f3 0f b5 0d 6c e0 cf 8f 34 06 28 03 93 2e  cf 24 29 38 ff); # random
-	push @packet_hex, qw(00); # session id length
-	push @packet_hex, sprintf("%04x", length($ciphersuites_hex) / 2);
-	push @packet_hex, $ciphersuites_hex;
-	push @packet_hex, qw(02); # compression methods length
-	push @packet_hex, qw(01); # deflate
-	push @packet_hex, qw(00); # compression: null
-	#push @packet_hex, qw(00 04); # compression methods length
-	#push @packet_hex, qw(00 23); # compression methods length
-	#push @packet_hex, qw(00); # deflate
-	#push @packet_hex, qw(00); # compression: null
+	push @packet_hex, (
+		qw(16), # content type: handshake (22)
+		$protocol,
+		get_len_and_hex(2,	# handshake len
+			qw(01),		# client hello
+			get_len_and_hex(3,	# hello len
+				$protocol,
+				qw(4f de d1 b9), # time
+				qw(e4 62 79 36 ad fb d6  26 bb f3 0f b5 0d 6c e0 cf 8f 34 06 28 03 93 2e  cf 24 29 38 ff), # random
+				qw(00), # session id length
+				get_len_and_hex(2,	# cipher list len
+					@ciphersuites_hex,
+					qw(00 ff),
+				),
+				get_len_and_hex(1,	# compression methods length
+					# qw(01), # deflate
+					qw(00), # compression: null
+				),
+				
+				map { $protocol eq "0303" ? $_ : () } get_len_and_hex(2,	# extension len
+					# https://www.ietf.org/rfc/rfc5246.txt
+					# chapter 7.4.1.4.1
+					qw(00 0D), # signature algos
+					get_len_and_hex(2,	# extension len
+						get_len_and_hex(2,	# pair list len
+							qw(06 01 06 03),	# sha512 + rsa/ecdsa
+							qw(05 01 05 03),	# sha384 + rsa/ecdsa
+							qw(04 01 04 03),	# sha256 + rsa/ecdsa
+							qw(03 01 03 03),	# sha224 + rsa/ecdsa
+							qw(02 01 02 03),	# sha1 + rsa/ecdsa
+						),
+					),
+				),
+			),
+		),
+	);
 		
 	my $string = join("", @packet_hex);
 	$string =~ s/(..)/sprintf("%c", hex($1))/ge;
