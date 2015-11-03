@@ -30,7 +30,7 @@ use warnings;
 use IO::Socket::INET;
 use Getopt::Long;
 
-my $VERSION = "1.0.0";
+my $VERSION = "1.0.2";
 my $usage = "ssl-cipher-suite-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
@@ -733,6 +733,9 @@ sub scan_host {
 		my $most_nofs = 0;
 		my $null_encryption = 0;
 		my $weak_encryption = 0;
+		my $some_logjam = 0;
+		my $some_freak = 0;
+		my $meet_middle = 0;
 		my $anon_dh = 0;
 		my $bias = 0;
 		if ($protocol eq "0200") {
@@ -767,6 +770,15 @@ sub scan_host {
 					}
 					if (uses_weak_cipher($supported)) {
 						$weak_encryption = 1;
+					}
+					if (vuln_to_logjam($supported)) {
+						$some_logjam = 1;
+					}
+					if (vuln_to_freak($supported)) {
+						$some_freak = 1;
+					}
+					if (uses_3des($supported)) {
+						$meet_middle = 1;
 					}
 					if (uses_anon_dh($protocol, $supported)) {
 						$anon_dh = 1;
@@ -854,6 +866,15 @@ sub scan_host {
 						if (uses_weak_cipher($supported)) {
 							$weak_encryption = 1;
 						}
+						if (vuln_to_logjam($supported)) {
+							$some_logjam = 1;
+						}
+						if (vuln_to_freak($supported)) {
+							$some_freak = 1;
+						}
+						if (uses_3des($supported)) {
+							$meet_middle = 1;
+						}
 						if (uses_anon_dh($protocol, $supported)) {
 							$anon_dh = 1;
 						}
@@ -910,6 +931,15 @@ sub scan_host {
 		if ($anon_dh) {
 			print "[V] $ip:$port - Server supports a key-exchange algorithm that is vulnerable to man-in-the-middle attack (anonymous Diffie Hellman)\n";
 		}
+		if ($some_logjam) {
+			print "[V] $ip:$port - Some connections could be vulnerable to LOGJAM attack\n";
+		}		
+		if ($some_freak) {
+			print "[V] $ip:$port - Some connections could be vulnerable to FREAK attack\n";
+		}
+		if ($meet_middle) {
+			print "[V] $ip:$port - 3DES vulnerable to Meet in the Middle Attacks\n";
+		}		
 		if ($bias) {
             print "[V] $ip:$port - RC4-based SSL Cipher Suites Vulnerable To Bias Attacks\n";
 		}
@@ -1344,6 +1374,9 @@ sub get_warnings_array {
 	push @warnings, "NO_PFS"     unless uses_forward_secrecy($protocol, $cc);
 	push @warnings, "NULL_ENC"   if uses_null_cipher($cc);
 	push @warnings, "WEAK_ENC"   if uses_weak_cipher($cc);
+	push @warnings, "LOGJAM"     if vuln_to_logjam($cc);
+	push @warnings, "FREAK"     if vuln_to_freak($cc);
+	push @warnings, "DES_EDE3"     if uses_3des($cc);
 	push @warnings, "ANON_DH"    if uses_anon_dh($protocol, $cc);
 	push @warnings, "BIAS"       if uses_RC4($protocol,$cc);
 	return @warnings;
@@ -1427,6 +1460,40 @@ sub uses_weak_cipher {
 	if ($cc_name =~ /_40_/) {
 		return 1;
 	}
+
+	return 0;
+}
+
+sub vuln_to_logjam {
+	my $cc = shift;
+	my $cc_name = get_cc_name($cc);
+	if ($cc_name =~ /EXPORT_WITH|EXPORT40|_40_/) {
+		if ($cc_name =~ /^DH|^EDH|^ADH/) {
+			return 1;
+		}
+	}	
+
+	return 0;
+}
+
+sub vuln_to_freak {
+	my $cc = shift;
+	my $cc_name = get_cc_name($cc);
+	if ($cc_name =~ /EXPORT_WITH|EXPORT40|_40_/) {
+		if ($cc_name =~ /^RSA/) {
+			return 1;
+		}
+	}	
+
+	return 0;
+}
+
+sub uses_3des {
+	my $cc = shift;
+	my $cc_name = get_cc_name($cc);
+	if ($cc_name =~ /3DES|DES_192/) {
+			return 1;
+	}	
 
 	return 0;
 }
