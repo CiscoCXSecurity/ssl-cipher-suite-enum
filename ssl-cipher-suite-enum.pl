@@ -47,6 +47,7 @@ options are:
   --rdp              Send RDP protocol preamble before talking SSL
   --smtp             Send SMTP STARTTLS before talking SSL
   --ftp              Send FTP AUTH SSL talking SSL
+  --mysql            Send mysql STARTTLS
   --file hosts.txt   Hosts to scan
   --outfile out.txt  Log output to file too
   --rate n           Limit to n connections/sec.  Default: unlimited
@@ -92,6 +93,7 @@ my $global_rate = undef;
 my $global_rdp = 0;
 my $global_smtp = 0;
 my $global_ftp = 0;
+my $global_mysql = 0;
 my $global_persist = 0;
 my $global_recv_timeout = 10;
 my $global_connect_fail_count = 5;
@@ -112,6 +114,7 @@ my $result = GetOptions (
          "rdp"        => \$global_rdp,
          "smtp"       => \$global_smtp,
          "ftp"        => \$global_ftp,
+         "mysql"      => \$global_mysql,
          "file=s"     => \$hostfile,
          "rate=s"     => \$global_rate,
          "timeout_recv=s"     => \$global_recv_timeout,
@@ -282,6 +285,15 @@ my $ciphersuitenamestring = "
 0x006B	TLS_DHE_RSA_WITH_AES_256_CBC_SHA256	[RFC5246]
 0x006C	TLS_DH_anon_WITH_AES_128_CBC_SHA256	[RFC5246]
 0x006D	TLS_DH_anon_WITH_AES_256_CBC_SHA256	[RFC5246]
+0x0072	TLS_DHE_DSS_WITH_3DES_EDE_CBC_RMD160	mysql.yassl
+0x0073	TLS_DHE_DSS_WITH_AES_128_CBC_RMD160	mysql.yassl
+0x0074	TLS_DHE_DSS_WITH_AES_256_CBC_RMD160	mysql.yassl
+0x0077	TLS_DHE_RSA_WITH_3DES_EDE_CBC_RMD160	mysql.yassl
+0x0078	TLS_DHE_RSA_WITH_AES_128_CBC_RMD160	mysql.yassl
+0x0079	TLS_DHE_RSA_WITH_AES_256_CBC_RMD160	mysql.yassl
+0x007C	TLS_RSA_WITH_3DES_EDE_CBC_RMD160	mysql.yassl
+0x007D	TLS_RSA_WITH_AES_128_CBC_RMD160	mysql.yassl
+0x007E	TLS_RSA_WITH_AES_256_CBC_RMD160	mysql.yassl
 0x0080  TLS_GOSTR341094_WITH_28147_CNT_IMIT http://tools.ietf.org/html/draft-chudov-cryptopro-cptls-04
 0x0081  TLS_GOSTR341001_WITH_28147_CNT_IMIT http://tools.ietf.org/html/draft-chudov-cryptopro-cptls-04
 0x0082  TLS_GOSTR341094_WITH_NULL_GOSTR3411 http://tools.ietf.org/html/draft-chudov-cryptopro-cptls-04
@@ -715,7 +727,7 @@ sub scan_host {
 	print "Port:         $port\n";
 	print "Protocols:    $protos_to_test\n";
 	print "Persist:      $global_persist\n";
-	printf "Preamble:     %s%s%s%s\n", $global_ftp ? "FTP" : "", $global_rdp ? "RDP" : "", $global_smtp ? "SMTP" : "", ($global_rdp == 0 and $global_smtp == 0 and $global_ftp == 0) ? "None" : "";
+	printf "Preamble:     %s%s%s%s%s\n", $global_mysql ? "MySQL" : "", $global_ftp ? "FTP" : "", $global_rdp ? "RDP" : "", $global_smtp ? "SMTP" : "", ($global_rdp == 0 and $global_smtp == 0 and $global_ftp == 0 and $global_mysql == 0) ? "None" : "";
 	printf "Scan Rate:    %s\n", defined($global_rate) ? $global_rate . " connections/sec" : "unlimited";
 	printf "Recv Timeout: %s\n", $global_recv_timeout;
 
@@ -809,12 +821,8 @@ sub scan_host {
 			my $cc_chunk_size = 10;
 			my $protocol_supported = 1;
 			ciphersuite: while (scalar @cc_todo_in_groups) {
-				my @cc_chunk = ();
-				chunk: for (1..$cc_chunk_size) {
-					if (scalar @cc_todo_in_groups) {
-						push @cc_chunk, pop @cc_todo_in_groups;
-					}
-				}
+				my @cc_chunk = splice(@cc_todo_in_groups, 0, $cc_chunk_size);
+				
 				if (scalar @cc_chunk) {
 					my $supported = test_v3_ciphersuites($ip, $port, $protocol, @cc_chunk);
 					if (length($supported) == 4) {
@@ -1056,30 +1064,55 @@ sub get_client_hello_v2 {
 	return $string;
 }
 
+sub get_len_and_hex {
+	my $lensize = shift;
+	my $hex = join("", @_);
+	return (
+		sprintf("%0*x", 2*$lensize, length($hex)/2),
+		$hex
+	);
+}
+
+
 sub get_client_hello_v3 {
 	my ($protocol, @ciphersuites_hex) = @_;
-	my $ciphersuites_hex = join("", @ciphersuites_hex, "00", "ff");
 	my @packet_hex;
-	push @packet_hex, qw(16); # content type: handshake (22)
-	push @packet_hex, $protocol;
-	#push @packet_hex, sprintf("%04x", 0x2B + 6 + length($ciphersuites_hex) / 2);
-	push @packet_hex, sprintf("%04x", 0x2B + 1 + length($ciphersuites_hex) / 2);
-	push @packet_hex, qw(01); # client hello
-	#push @packet_hex, sprintf("%06x", 0x27 + 6 + length($ciphersuites_hex) / 2);
-	push @packet_hex, sprintf("%06x", 0x27 + 1 + length($ciphersuites_hex) / 2);
-	push @packet_hex, $protocol;
-	push @packet_hex, qw(4f de d1 b9); # time
-	push @packet_hex, qw(e4 60 78 36 ad fb d6  26 bb f3 0f b5 0d 6c e0 cf 8f 34 06 28 03 93 2e  cf 24 29 38 ff); # random
-	push @packet_hex, qw(00); # session id length
-	push @packet_hex, sprintf("%04x", length($ciphersuites_hex) / 2);
-	push @packet_hex, $ciphersuites_hex;
-	push @packet_hex, qw(02); # compression methods length
-	push @packet_hex, qw(01); # deflate
-	push @packet_hex, qw(00); # compression: null
-	#push @packet_hex, qw(00 04); # compression methods length
-	#push @packet_hex, qw(00 23); # compression methods length
-	#push @packet_hex, qw(00); # deflate
-	#push @packet_hex, qw(00); # compression: null
+	push @packet_hex, (
+		qw(16), # content type: handshake (22)
+		$protocol,
+		get_len_and_hex(2,	# handshake len
+			qw(01),		# client hello
+			get_len_and_hex(3,	# hello len
+				$protocol,
+				qw(4f de d1 b9), # time
+				qw(e4 62 79 36 ad fb d6  26 bb f3 0f b5 0d 6c e0 cf 8f 34 06 28 03 93 2e  cf 24 29 38 ff), # random
+				qw(00), # session id length
+				get_len_and_hex(2,	# cipher list len
+					@ciphersuites_hex,
+					qw(00 ff),
+				),
+				get_len_and_hex(1,	# compression methods length
+					# qw(01), # deflate
+					qw(00), # compression: null
+				),
+				
+				map { $protocol eq "0303" ? $_ : () } get_len_and_hex(2,	# extension len
+					# https://www.ietf.org/rfc/rfc5246.txt
+					# chapter 7.4.1.4.1
+					qw(00 0D), # signature algos
+					get_len_and_hex(2,	# extension len
+						get_len_and_hex(2,	# pair list len
+							qw(06 01 06 03),	# sha512 + rsa/ecdsa
+							qw(05 01 05 03),	# sha384 + rsa/ecdsa
+							qw(04 01 04 03),	# sha256 + rsa/ecdsa
+							qw(03 01 03 03),	# sha224 + rsa/ecdsa
+							qw(02 01 02 03),	# sha1 + rsa/ecdsa
+						),
+					),
+				),
+			),
+		),
+	);
 		
 	my $string = join("", @packet_hex);
 	$string =~ s/(..)/sprintf("%c", hex($1))/ge;
@@ -1124,6 +1157,9 @@ sub get_socket {
 	}
 	if ($global_ftp) {
 		do_ftp_preamble($socket);
+	}
+	if ($global_mysql) {
+		do_mysql_preamble($socket);
 	}
 	return $socket;
 }
@@ -1202,6 +1238,10 @@ sub test_v3_ciphersuites {
 		@data = split("", $data);
 
 		if ($data[1] . $data[2] ne $protocol_bin) {
+			if ($global_mysql and $data[1] eq "\0" and $data[2] eq "\0") {
+				printf "[+] Cipher suite NOT supported.  Probed for %s %s\n", get_protocol_name($protocol), $ccname if $debug > 0;
+				return -1;
+			}
 			if ($global_persist) {
 				printf "[+] Protocol %s is not supported.  Continuing anyway...\n", get_protocol_name($protocol);
 			} else {
@@ -1225,7 +1265,7 @@ sub test_v3_ciphersuites {
 			my $neg_cc = sprintf("%02x%02x",ord($data[$ccpos]), ord($data[$ccpos+1]));
 			my $neg_cc_name = get_cc_name($neg_cc);
 			printf "[+] packet type (should be 0x02 for Server Hello): %02x\n", ord($data[5]) if $debug > 1;
-			printf "[+] Cipher Suite: %02x%02x\n", ord($data[44]), ord($data[45]) if $debug > 1;
+			printf "[+] Cipher Suite: %s %s\n", $neg_cc, $neg_cc_name if $debug > 1;
 #			printf "[+] Server time: %02x%02x%02x%02x\n", ord($data[11]), ord($data[12]), ord($data[13]), ord($data[14]);
 #			printf "[+] Compression: %02x\n", ord($data[46]);
 #			my $exlen = (ord($data[47]) << 8) + ord($data[48]);
@@ -1623,6 +1663,48 @@ sub do_ftp_preamble {
 
 	print "[+] FTP Preamble - Received from Server :\n"  if $debug > 1;
 	hdump($data) if $debug > 1;
+}
+
+sub do_mysql_preamble {
+	my $socket = shift;
+
+	my $data = recv_all($socket, 4);
+	return -1 unless defined($data);
+	print "[+] Mysql Initial Handshake Packet - Received from Server :\n"  if $debug > 1;
+	hdump($data) if $debug > 1;
+
+	my @data = split("", $data);
+	if (scalar(@data) > 0) {
+		my $length = ((ord($data[1]) & 0x7f) << 8) + ord($data[0]);
+		printf "[+] Mysql Initial Handshake Packet - Initial length: %d\n", $length if $debug > 1;
+		$data = recv_all($socket, $length);
+		return -1 unless defined($data);
+		hdump($data) if $debug > 1;
+	}
+
+	# my @packet = qw(
+	# 20 00 00 01 05 ae 03 00    00 00 00 01 08 00 00 00
+	# 00 00 00 00 00 00 00 00    00 00 00 00 00 00 00 00
+	# 00 00 00 00 );
+
+	my @packet = qw(
+	20 00 00 01 05 ae 0f 00    00 00 00 01 21 00 00 00
+	00 00 00 00 00 00 00 00    00 00 00 00 00 00 00 00
+	00 00 00 00 );
+
+	my $packet = join("", @packet);
+	$packet =~ s/(..)/sprintf("%c", hex($1))/ge;
+	print $socket $packet;
+
+	print "[+] Sending SSL request packet\n" if $debug > 1;
+	hdump($packet) if $debug > 1;
+
+	#my $data; # = recv_all($socket, 4);
+	#$socket->recv($data, 1024);
+	#return -1 unless defined($data);
+	#print "[+] Mysql - Received from Server :\n"  if $debug > 1;
+	#hdump($data) if $debug > 1;
+
 }
 
 # Perl Cookbook, Tie Example: Multiple Sink Filehandles
