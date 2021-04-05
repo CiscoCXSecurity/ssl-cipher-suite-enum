@@ -30,7 +30,7 @@ use warnings;
 use IO::Socket::INET;
 use Getopt::Long;
 
-my $VERSION = "0.9.1";
+my $VERSION = "0.9.2";
 my $usage = "ssl-cipher-suite-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
@@ -988,37 +988,17 @@ sub get_client_hello_v3 {
 	my @packet_hex;
 	push @packet_hex, qw(16); # content type: handshake (22)
 	push @packet_hex, $protocol;
-	push @packet_hex, sprintf("%04x", 0x56 + length($ciphersuites_hex) / 2);
+	push @packet_hex, sprintf("%04x", 0x2B + length($ciphersuites_hex) / 2);
 	push @packet_hex, qw(01); # client hello
-	push @packet_hex, sprintf("%06x", 0x52 + length($ciphersuites_hex) / 2);
+	push @packet_hex, sprintf("%06x", 0x27 + length($ciphersuites_hex) / 2);
 	push @packet_hex, $protocol;
 	push @packet_hex, qw(4f de d1 b9); # time
 	push @packet_hex, qw(e4 60 78 36 ad fb d6  26 bb f3 0f b5 0d 6c e0 cf 8f 34 06 28 03 93 2e  cf 24 29 38 ff); # random
 	push @packet_hex, qw(00); # session id length
 	push @packet_hex, sprintf("%04x", length($ciphersuites_hex) / 2);
 	push @packet_hex, $ciphersuites_hex;
-	push @packet_hex, qw(02); # compression methods length
-	push @packet_hex, qw(01); # compression: deflate
+	push @packet_hex, qw(01); # compression methods length
 	push @packet_hex, qw(00); # compression: null
-	push @packet_hex, qw(00 28); # extensions length
-	push @packet_hex, qw(ff 01); # reneg info
-	push @packet_hex, qw(00 01); # length
-	push @packet_hex, qw(00); # data
-	push @packet_hex, qw(00 0a); # elliptic curves
-	push @packet_hex, qw(00 08); # length
-	push @packet_hex, qw(00 06); # ec length
-	push @packet_hex, qw(00 17 00 18 00 19); # list of ec's - each 2 bytes
-	push @packet_hex, qw(00 0b); # ec point formats
-	push @packet_hex, qw(00 02); # length
-	push @packet_hex, qw(01); # ec pf length
-	push @packet_hex, qw(00); # ec pf uncompressed
-	push @packet_hex, qw(00 23); # session ticket tls
-	push @packet_hex, qw(00 00); # length
-	push @packet_hex, qw(33 74); # unknown type
-	push @packet_hex, qw(00 00); # length
-	push @packet_hex, qw(00 05); # status request
-	push @packet_hex, qw(00 05); # length
-	push @packet_hex, qw(01 00 00 00 00); # data
 		
 	my $string = join("", @packet_hex);
 	$string =~ s/(..)/sprintf("%c", hex($1))/ge;
@@ -1054,6 +1034,10 @@ sub recv_all {
 	while (length($data) < $length) {
 		$socket->recv($data2, $length);
 		$data .= $data2;
+		# If we read 0, then the socket has been closed by remote end.  We must abort reading.
+		if (length($data2) == 0) {
+			return $data;
+		}
 	}
 	return $data;
 }

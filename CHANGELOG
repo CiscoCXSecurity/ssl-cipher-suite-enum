@@ -1,4 +1,9 @@
 
+2012-08-03 ssl-cipher-suite-enum v0.9.2
+
+* Bug fix: Hanging when server closes connection
+* Bug fix: Missing some SSLv3 cipher suites.  Simplified probe to fix.
+
 2012-07-19 ssl-cipher-suite-enum v0.9.1
 
 * Bug fix: better reporting of NULL ciphers
