@@ -30,8 +30,8 @@ use warnings;
 use IO::Socket::INET;
 use Getopt::Long;
 
-my $VERSION = "0.4-beta";
-my $usage = "Starting ssl-cipher-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
+my $VERSION = "0.9";
+my $usage = "ssl-cipher-suite-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
 ssl-cipher-suite-enum.pl [ options ] ( -f hosts.txt | host | host:port )
@@ -42,16 +42,18 @@ options are:
   --tlsv1_0 or --tlsv1 or --sslv3_1
   --tlsv1_1 or --sslv3_2
   --tlsv1_2 or --sslv3_3
-  --file hosts.txt
-  --outfile out.txt
-  --rate n   Limit to n connections/sec.  Default: unlimited
+  --rdp              Send RDP protocol preamble before talking SSL
+  --smtp             Send SMTP STARTTLS before talking SSL
+  --file hosts.txt   Hosts to scan
+  --outfile out.txt  Log output to file too
+  --rate n           Limit to n connections/sec.  Default: unlimited
   --verbose
   --debug
   --help
 
 Examples:
 
- Scan for cipher suites supported by all SSL protocols:
+ Scan for cipher suites supported by all SSL protocols (port 443):
   ssl-cipher-suite-enum.pl www.example.com
 
  Scan only SSLv2 cipher suites on port 8834:
@@ -62,6 +64,13 @@ Examples:
 
  Scan a lots of hosts (each line is 'host' or 'host:port'):
   ssl-cipher-suite-enum.pl --file hosts.txt
+
+ Scan RDP server (could support SSL with or without RDP handshake):
+  ssl-cipher-suite-enum.pl 10.0.0.1:3389
+  ssl-cipher-suite-enum.pl --rdp 10.0.0.1:3389
+
+ Send HELO x, STARTTLS preamble to SMTP server before SSL scanning:
+  ssl-cipher-suite-enum.pl --smtp 10.0.0.1:25
 
 ";
 my $sslv2_0 = 0;
@@ -77,26 +86,30 @@ my $global_connection_count = 0;
 my $help = 0;
 my %results = ();
 my $global_rate = undef;
+my $global_rdp = 0;
+my $global_smtp = 0;
 
 my $result = GetOptions (
-         "sslv2_0"   => \$sslv2_0,
-         "sslv2"     => \$sslv2_0,
-         "sslv3_0"   => \$sslv3_0,
-         "sslv3"     => \$sslv3_0,
-         "tlsv1_0"   => \$tlsv1_0,
-         "tlsv1"     => \$tlsv1_0,
-         "tlsv1_0"   => \$tlsv1_0,
-         "sslv3_1"   => \$tlsv1_0,
-         "tlsv1_1"   => \$tlsv1_1,
-         "sslv3_2"   => \$tlsv1_1,
-         "tlsv1_2"   => \$tlsv1_2,
-         "sslv3_3"   => \$tlsv1_2,
-         "file=s"    => \$hostfile,
-         "rate=s"    => \$global_rate,
+         "sslv2_0"    => \$sslv2_0,
+         "sslv2"      => \$sslv2_0,
+         "sslv3_0"    => \$sslv3_0,
+         "sslv3"      => \$sslv3_0,
+         "tlsv1_0"    => \$tlsv1_0,
+         "tlsv1"      => \$tlsv1_0,
+         "tlsv1_0"    => \$tlsv1_0,
+         "sslv3_1"    => \$tlsv1_0,
+         "tlsv1_1"    => \$tlsv1_1,
+         "sslv3_2"    => \$tlsv1_1,
+         "tlsv1_2"    => \$tlsv1_2,
+         "sslv3_3"    => \$tlsv1_2,
+         "rdp"        => \$global_rdp,
+         "smtp"       => \$global_smtp,
+         "file=s"     => \$hostfile,
+         "rate=s"     => \$global_rate,
          "outfile=s"  => \$outfile,
-         "verbose"   => \$verbose,
-         "debug"     => \$debug,
-         "help"      => \$help
+         "verbose"    => \$verbose,
+         "debug"      => \$debug,
+         "help"       => \$help
 );
 
 if ($help) {
@@ -664,7 +677,7 @@ foreach my $line (split "\n", $ciphersuitenamestring) {
 $| = 1;
 
 my $global_starttime = time;
-printf "Starting ssl-cipher-enum v%s ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ ) at %s\n", $VERSION, scalar(localtime);
+printf "Starting ssl-cipher-suite-enum v%s ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ ) at %s\n", $VERSION, scalar(localtime);
 printf "\n[+] Scanning %s hosts\n", scalar @targets;
 print Dumper \@targets if $debug > 0;
 
@@ -673,7 +686,7 @@ foreach my $target_href (@targets) {
 }
 
 print_section("Scan Complete");
-printf "[+] ssl-cipher-enum v%s completed at %s.  %s connections in %s secs.\n", $VERSION, scalar(localtime), $global_connection_count, get_runtime();
+printf "[+] ssl-cipher-suite-enum v%s completed at %s.  %s connections in %s secs.\n", $VERSION, scalar(localtime), $global_connection_count, get_runtime();
 print "\n";
 
 sub scan_host {
@@ -683,6 +696,7 @@ sub scan_host {
 	print "IP:        $ip\n";
 	print "Port:      $port\n";
 	print "Protocols: $protos_to_test\n";
+	printf "Preamble:  %s%s%s\n", $global_rdp ? "RDP" : "", $global_smtp ? "SMTP" : "", ($global_rdp == 0 and $global_smtp == 0) ? "None" : "";
 	printf "Scan Rate: %s\n", defined($global_rate) ? $global_rate . " connections/sec" : "unlimited";
 
 	$global_connection_count = 0; # need to reset for each host for accurate scan rate
@@ -729,7 +743,7 @@ sub scan_host {
 					if (uses_weak_cipher($supported)) {
 						$weak_encryption = 1;
 					}
-					if (get_cc_name($supported) =~ /(DH_anon_WITH|ADH_WITH)/) {
+					if (uses_anon_dh($protocol, $supported)) {
 						$anon_dh = 1;
 					}
 				# Some servers close connection when an unsupported cipher suite is encountered
@@ -807,7 +821,7 @@ sub scan_host {
 						if (uses_weak_cipher($supported)) {
 							$weak_encryption = 1;
 						}
-						if (get_cc_name($supported) =~ /(DH_anon_WITH|ADH_WITH)/) {
+						if (uses_anon_dh($protocol, $supported)) {
 							$anon_dh = 1;
 						}
 					# Some servers close connection when an unsupported cipher suite is encountered
@@ -819,23 +833,26 @@ sub scan_host {
 					}
 				}
 	
-				if (scalar @supported_ciphersuites) {
-					# Check perferred cipher suite
-					my $supported = test_v3_ciphersuites($ip, $port, $protocol, @supported_ciphersuites);
-					if (length($supported) == 4) {
-						printf "\n[+] Preferred %s cipher suite on $ip:$port: %s\n\n", get_protocol_name($protocol), get_cc_name($supported);
-						if (vuln_to_beast($protocol, $supported)) {
-							$most_beast = 1;
-						}
-						unless (uses_forward_secrecy($protocol, $supported)) {
-							$most_nofs = 1;
-						}
-					} elsif ($supported == -1) {
-						print "\n[W] Preffered cipher suite not found on $ip:$port.  This shouldn't happen!\n";
-					}
-				}
 			}
 		}
+
+		if (scalar @supported_ciphersuites and $protocol ne "0200") {
+			# Check perferred cipher suite
+			my $supported;
+			$supported = test_v3_ciphersuites($ip, $port, $protocol, @supported_ciphersuites);
+			if (length($supported) == 4) {
+				printf "\n[+] Preferred %s cipher suite on $ip:$port: %s %s\n\n", get_protocol_name($protocol), get_cc_name($supported), get_warnings($protocol, $supported);
+				if (vuln_to_beast($protocol, $supported)) {
+					$most_beast = 1;
+				}
+				unless (uses_forward_secrecy($protocol, $supported)) {
+					$most_nofs = 1;
+				}
+			} elsif ($supported == -1) {
+				print "\n[W] Preffered cipher suite not found on $ip:$port.  This shouldn't happen!\n";
+			}
+		}
+
 		printf "[+] %s %s cipher suites supported\n", $cc_supported, get_protocol_name($protocol);
 		print "\n";
 		if ($most_beast) {
@@ -1018,6 +1035,12 @@ sub get_socket {
 		Proto => 'tcp',
 	) or die "ERROR in Socket Creation : $!\n";
 	$global_connection_count++;
+	if ($global_rdp) {
+		do_rdp_preamble($socket);
+	}
+	if ($global_smtp) {
+		do_smtp_preamble($socket);
+	}
 	return $socket;
 }
 
@@ -1173,7 +1196,6 @@ sub test_v2_ciphersuites {
 			print "[+] Short response received.  Not processing\n" if $debug > 1;
 		}
 	} else {
-		# printf "[+] Cipher suite not supported (truncated packet): %s, cipher suite %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
 		printf "[+] Cipher suite not supported (truncated packet): %s\n" if $debug > 0;
 	}
 	return -1;
@@ -1210,7 +1232,7 @@ sub get_warnings_array {
 	push @warnings, "NO_PFS"     unless uses_forward_secrecy($protocol, $cc);
 	push @warnings, "NULL_ENC"   if $cc_name =~ /(WITH_NULL)/;
 	push @warnings, "WEAK_ENC"   if uses_weak_cipher($cc);
-	push @warnings, "ANON_DH"    if $cc_name =~ /(DH_anon_WITH|ADH_WITH)/;
+	push @warnings, "ANON_DH"    if uses_anon_dh($protocol, $cc);
 	return @warnings;
 }
 
@@ -1218,6 +1240,17 @@ sub vuln_to_beast {
 	my ($protocol, $cc) = @_;
 	my $cc_name = get_cc_name($cc);
 	my $protocol_name = get_protocol_name($protocol);
+
+	# BEAST only affects HTTPS.  Usually this program is not aware of the
+	# application protocol.  However, if --rdp was used, we can be sure
+	# we're not talking HTTPS, so suppress warnings about BEAST.
+	if ($global_rdp) {
+		return 0;
+	}
+	if ($global_smtp) {
+		return 0;
+	}
+
 	if ($protocol_name !~ /TLSv1\.[12]/ and $cc_name !~ /(RC4|NULL)/) {
 		return 1;
 	}
@@ -1241,6 +1274,10 @@ sub uses_weak_cipher {
 	}
 
 	if ($cc_name =~ /DES_64_/) {
+		return 1;
+	}
+
+	if ($cc_name =~ /_40_/) {
 		return 1;
 	}
 
@@ -1284,6 +1321,54 @@ sub uses_forward_secrecy {
 	}
 
 	return 1;
+}
+
+sub uses_anon_dh {
+	my ($protocol, $cc) = @_;
+	my $cc_name = get_cc_name($cc);
+	if ($cc_name =~ /^ADH_|DH_anon_WITH|ADH_WITH/) {
+		return 1;
+	}
+
+	return 0;
+}
+
+sub do_rdp_preamble {
+	my $socket = shift;
+	my @packet = qw(03 00  00 13 0e e0 00 00 00 00 00 01 00 08 00 03 00 00  00);
+	my $packet = join("", @packet);
+	$packet =~ s/(..)/sprintf("%c", hex($1))/ge;
+	print $socket $packet;
+
+	my $data;
+	$socket->recv($data,4);
+	print "[+] RDP Preamble - Received from Server :\n"  if $debug > 1;
+	hdump($data) if $debug > 1;
+
+	my @data = split("", $data);
+	if (scalar(@data) > 0) {
+		my $length = ((ord($data[2]) & 0x7f) << 8) + ord($data[3]);
+		printf "[+] RDP Preamble - Initial length: %d\n", $length if $debug > 1;
+		$socket->recv($data,$length - 4);
+	}
+}
+
+sub do_smtp_preamble {
+	my $socket = shift;
+
+	# read banner - and hope it's only a single line!
+	my $data = readline($socket);
+
+	my $packet = "HELO x\r\n";
+	print $socket $packet;
+	$data = readline($socket);
+
+	$packet = "STARTTLS\r\n";
+	print $socket $packet;
+	$data = readline($socket);
+
+	print "[+] SMTP Preamble - Received from Server :\n"  if $debug > 1;
+	hdump($data) if $debug > 1;
 }
 
 # Perl Cookbook, Tie Example: Multiple Sink Filehandles

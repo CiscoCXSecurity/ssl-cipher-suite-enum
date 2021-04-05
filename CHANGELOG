@@ -1,4 +1,13 @@
 
+2012-07-18 ssl-cipher-suite-enum v0.9
+
+* Changed program name in some places
+* Added --rdp and --smtp for testing SSL over RDP and SMTP
+* Weaknesses are listed next to each preferred cipher suite
+* Bug fix: Anon DH cipher suites flagged more reliably
+* No longer reports preferred cipher suite for SSLv2 - there is
+  no such thing in SSLv2 as the client chooses
+
 2012-07-08 ssl-cipher-suite-enum v0.4
 
 * Added "--outfile file" option to log output to file
