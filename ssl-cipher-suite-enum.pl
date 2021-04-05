@@ -28,8 +28,9 @@
 use strict;
 use warnings;
 use IO::Socket::INET;
+use Data::Dumper;
 
-my $VERSION = "0.1-beta";
+my $VERSION = "0.2-beta";
 my $usage = "Starting ssl-cipher-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
@@ -41,7 +42,13 @@ my $port = shift or die $usage;
 my $debug = shift;
 $debug = 0 unless defined($debug);
 
-# TODO resolve hostname to prevent multiple resolutions
+my $ip =  gethostbyname($host);
+if (defined($ip)) {
+	$ip = inet_ntoa($ip);
+} else {
+	print "[E] Cannot resolve $host\n";
+	exit 1;
+}
 
 # flush after every write
 $| = 1;
@@ -531,15 +538,18 @@ foreach my $line (split "\n", $ciphersuitenamestring) {
 		$numberofcc{$2} = uc $1;
 	}
 }
+my $starttime = time;
 printf "Starting ssl-cipher-enum v%s ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ ) at %s\n", $VERSION, scalar(localtime);
 print "\n";
 print "Target: $host\n";
+print "IP:     $ip\n";
 print "Port:   $port\n";
 print "\n";
 
-protocol: foreach my $protocol ("0303", "0302", "0301", "0300", "0200") {
+protocol: foreach my $protocol ("0200", "0300", "0301", "0302", "0303") {
 	my $protocol_name = get_protocol_name($protocol);
 	print "\n[+] Testing protocol $protocol_name\n\n";
+	my $cc_supported = 0;
 	if ($protocol eq "0200") {
 		foreach my $ciphersuite (qw(000000 010080 020080 030080 040080 050080 060040 060140 0700c0 0701c0 080080 ff0800 ff0810 0000ff)) {
 			printf "[D] Checking Cipher Suite: %s %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
@@ -583,83 +593,135 @@ protocol: foreach my $protocol ("0303", "0302", "0301", "0300", "0200") {
 				printf "[+] Cipher suite not supported (truncated packet): %s, cipher suite %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
 			}
 		}
-	} else {	
-		foreach my $ciphersuite (map {sprintf("00%02x", $_), sprintf("C0%02x", $_); } (0..255)) {
-			printf "[D] Checking Cipher Suite: %s %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
-			print "[+] Connecting to $host:$port\n" if $debug > 1;
-			my $socket = get_socket();
-	
-			my $string = get_client_hello_v3($protocol, $ciphersuite);
-			my $protocol_bin = $protocol;
-			$protocol_bin =~ s/\s//g;
-			$protocol_bin =~ s/(..)/sprintf("%c", hex($1))/ge;
-			
-			print "[+] Sending:\n" if $debug > 1;
-			hdump($string) if $debug > 1;
-			
-			print $socket $string;
-			
-			my $data;
-			$socket->recv($data,5);
-			print "[+] Received from Server :\n" if $debug > 1;
-			hdump($data) if $debug > 1;
-		
-			my $ccname = get_cc_name($ciphersuite);
-			my @data = split("", $data);
-			if (scalar(@data) > 0) {
-				my $length = (ord($data[3]) << 8) + ord($data[4]);
-				printf "[+] Initial length: %d\n", $length if $debug > 1;
-				my $data2;
-				$socket->recv($data2,$length);
-				print "[+] Received from Server :\n" if $debug > 1;
-				hdump($data2) if $debug > 1;
-				$data = $data . $data2;
-				@data = split("", $data);
+	} else {
+		my @cc_todo_individually = ();
+		my @cc_todo_in_groups = ();
 
-				if ($data[1] . $data[2] ne $protocol_bin) {
-					printf "[+] Protocol %s is not supported.  Skipping.\n", get_protocol_name($protocol);
-					next protocol;
+		# Put the rarely-supported cipher suites into one group
+		# and the more commonly supported ones into another
+		foreach my $ciphersuite (map {sprintf("00%02x", $_), sprintf("c0%02x", $_); } (0..255)) {
+			my $cc_name = get_cc_name($ciphersuite);
+			if ($cc_name =~ /(UNKNOWN|PSK|GOST|KRB|NULL|anon|FZA|ADH)/) {
+				push @cc_todo_in_groups, $ciphersuite;
+			} else {
+				push @cc_todo_individually, $ciphersuite;
+			}
+		}
+
+		my $cc_chunk_size = 10;
+		my $protocol_supported = 1;
+		while (scalar @cc_todo_in_groups) {
+			my @cc_chunk = ();
+			chunk: for (1..$cc_chunk_size) {
+				if (scalar @cc_todo_in_groups) {
+					push @cc_chunk, pop @cc_todo_in_groups;
 				}
-				if ($data[0] eq "\x15") {
-					if ($data[6] eq "\x28") {
-						printf "[+] Cipher suite NOT supported.  Probed for %s %s [%s], Reply protocol: %s\n", get_protocol_name($protocol), $ccname, $ciphersuite, ord($data[1]) . "." . ord($data[2]) if $debug > 0;
-					} else {
-						printf "[+] Packet type 'Alert' for protocol %s cipher suite %s[%s]: %02x\n", $protocol, $ccname, $ciphersuite, ord($data[0]);
-						printf "[+] Protocol: %d.%d\n", ord($data[1]), ord($data[2]) if $debug > 1;
-						printf "[+] Alert Level (2 is fatal): %02x\n", ord($data[5]) if $debug > 1;
-						printf "[+] Alert description (0x28 is Handshake failure): %02x\n", ord($data[6]) if $debug > 1;
-					}
+			}
+			if (scalar @cc_chunk) {
+				my $supported = test_v3_ciphersuites($protocol, @cc_chunk);
+				if ($supported == 1) {
+					# one or more is valid.  so we try individually instead later
+					push @cc_todo_individually, @cc_chunk;
+				} elsif ($supported == 2) {
+					$protocol_supported = 0;
+					last;
+				} elsif ($supported == 0) {
+					# none are valid.  we saved time by not trying individually
+				}
+			}
+		}
 
-				} elsif ($data[0] eq "\x16") {
-					my $sidlen = ord($data[43]);
-					my $ccpos = $sidlen + 44;
-					my $neg_cc = sprintf("%02x%02x",ord($data[$ccpos]), ord($data[$ccpos+1]));
-					my $neg_cc_name = get_cc_name($neg_cc);
-					printf "[+] Cipher suite supported.  Probed for: %s %s [%s], Negotiated: %s %s [%s]\n", get_protocol_name($protocol), $ccname, $ciphersuite, get_protocol_name(sprintf("%02x%02x", ord($data[1]), ord($data[2]))), $neg_cc_name, $neg_cc;
-					printf "[+] packet type (should be 0x02 for Server Hello): %02x\n", ord($data[5]) if $debug > 1;
-					printf "[+] Cipher Suite: %02x%02x\n", ord($data[44]), ord($data[45]) if $debug > 1;
-				} else {
-					printf "[+] Packet type (should be 0x16) for protocol %d.%d, cipher suite %s [%s]: %02x\n", ord($data[1]), ord($data[2]), $ccname, $ciphersuite, ord($data[0]);
-				printf "[+] Protocol: %d.%d\n", ord($data[1]), ord($data[2]);
-					printf "[+] packet type (should be 0x02 for Server Hello): %02x\n", ord($data[5]);
-					printf "[+] Protocol2: %d.%d\n", ord($data[9]), ord($data[10]);
-					printf "[+] Server time: %02x%02x%02x%02x\n", ord($data[11]), ord($data[12]), ord($data[13]), ord($data[14]);
-					printf "[+] Cipher Suite: %02x%02x\n", ord($data[44]), ord($data[45]);
-					printf "[+] Compression: %02x\n", ord($data[46]);
+		if ($protocol_supported) {
+			foreach my $ciphersuite (@cc_todo_individually) {
+				my $supported = test_v3_ciphersuites($protocol, $ciphersuite);
+				if ($supported == 1) {
+					$cc_supported++;
 				}
 			}
 		}
 	}
+	printf "\n[+] %s %s cipher suites supported\n", $cc_supported, get_protocol_name($protocol);
 }
-	
+
+print "\n";
+printf "[+] ssl-cipher-enum v%s completed after %s secs at %s\n", $VERSION, time - $starttime, scalar(localtime);
+print "\n";
+
+sub get_cc_name {
+	my ($ciphersuite) = @_; # in hex
+	my $ccname = "UNKNOWN_CIPHER_SUITE_NAME [$ciphersuite]";
+	if (defined($nameofcc{uc $ciphersuite})) {
+		$ccname = $nameofcc{uc $ciphersuite} . "[" . $ciphersuite . "]";
+	}
+	return $ccname;
+}
+
+# http://www.perlmonks.org/?node_id=111481
+sub hdump {
+    my $offset = 0;
+    my(@array,$format);
+    foreach my $data (unpack("a16"x(length($_[0])/16)."a*",$_[0])) {
+        my($len)=length($data);
+        if ($len == 16) {
+            @array = unpack('N4', $data);
+            $format="0x%08x (%05d)   %08x %08x %08x %08x   %s\n";
+        } else {
+            @array = unpack('C*', $data);
+            $_ = sprintf "%2.2x", $_ for @array;
+            push(@array, '  ') while $len++ < 16;
+            $format="0x%08x (%05d)" .
+               "   %s%s%s%s %s%s%s%s %s%s%s%s %s%s%s%s   %s\n";
+        } 
+        $data =~ tr/\0-\37\177-\377/./;
+        printf $format,$offset,$offset,@array,$data;
+        $offset += 16;
+    }
+}
+
+sub get_protocol_name {
+	my ($number) = @_;
+	return "SSLv2.0" if $number eq "0200";
+	return "SSLv3.0" if $number eq "0300";
+	return "TLSv1.0" if $number eq "0301";
+	return "TLSv1.1" if $number eq "0302";
+	return "TLSv1.2" if $number eq "0303";
+	return "UNKNOWN_PROTOCOL_$number";
+}
+
+sub get_client_hello_v2 {
+	my (@ciphersuites_hex) = @_;
+	my $ciphersuites_hex = join("", @ciphersuites_hex);
+	my @packet_hex;
+	push @packet_hex, qw(80); # bit 1: 2 byte header; bit 2: no security escapes, bits 3-8: high length bits
+	push @packet_hex, sprintf("%02x", 0x1c + length($ciphersuites_hex) / 2);
+	push @packet_hex, qw(01); # client hello
+	push @packet_hex, qw(0002); # version 2.0
+	push @packet_hex, sprintf("%04x", length($ciphersuites_hex) / 2);
+	push @packet_hex, qw(0000); # session id length
+	push @packet_hex, qw(0010); # challenge length
+	push @packet_hex, $ciphersuites_hex . "001122"; #  TODO what's this 1122 bit?
+	my $r = "";
+	for (1..16) {
+		my $rand = sprintf "%02x", int(rand(255));
+		$r .= $rand;
+	}
+	push @packet_hex, $r; # challenge
+	my $string = join("", @packet_hex);
+	$string =~ s/(..)/sprintf("%c", hex($1))/ge;
+
+	return $string;
+}
+
 sub get_client_hello_v3 {
-	my ($protocol, $ciphersuites_hex) = @_;
+	my ($protocol, @ciphersuites_hex) = @_;
+	my $ciphersuites_hex = join("", @ciphersuites_hex);
 	my @packet_hex;
 	push @packet_hex, qw(16); # content type: handshake (22)
 	push @packet_hex, $protocol;
 	push @packet_hex, sprintf("%04x", 0x56 + length($ciphersuites_hex) / 2);
 	push @packet_hex, qw(01); # client hello
-	push @packet_hex, qw(00 00 54); # length
+	# push @packet_hex, qw(00 00 54); # length
+	push @packet_hex, sprintf("%06x", 0x52 + length($ciphersuites_hex) / 2);
 	push @packet_hex, $protocol;
 	push @packet_hex, qw(4f de d1 b9); # time
 	push @packet_hex, qw(e4 60 78 36 ad fb d6  26 bb f3 0f b5 0d 6c e0 cf 8f 34 06 28 03 93 2e  cf 24 29 38 ff); # random
@@ -694,75 +756,87 @@ sub get_client_hello_v3 {
 	return $string;
 }
 
-sub get_cc_name {
-	my ($ciphersuite) = @_; # in hex
-	my $ccname = "UNKNOWN_CIPHER_SUITE_NAME";
-	if (defined($nameofcc{uc $ciphersuite})) {
-		$ccname = $nameofcc{uc $ciphersuite};
-	}
-	return $ccname;
-}
-
-# http://www.perlmonks.org/?node_id=111481
-sub hdump {
-    my $offset = 0;
-    my(@array,$format);
-    foreach my $data (unpack("a16"x(length($_[0])/16)."a*",$_[0])) {
-        my($len)=length($data);
-        if ($len == 16) {
-            @array = unpack('N4', $data);
-            $format="0x%08x (%05d)   %08x %08x %08x %08x   %s\n";
-        } else {
-            @array = unpack('C*', $data);
-            $_ = sprintf "%2.2x", $_ for @array;
-            push(@array, '  ') while $len++ < 16;
-            $format="0x%08x (%05d)" .
-               "   %s%s%s%s %s%s%s%s %s%s%s%s %s%s%s%s   %s\n";
-        } 
-        $data =~ tr/\0-\37\177-\377/./;
-        printf $format,$offset,$offset,@array,$data;
-        $offset += 16;
-    }
-}
-
-sub get_protocol_name {
-	my ($number) = @_;
-	return "SSLv2"   if $number eq "0200";
-	return "SSLv3"   if $number eq "0300";
-	return "TLSv1.0" if $number eq "0301";
-	return "TLSv1.1" if $number eq "0302";
-	return "TLSv1.2" if $number eq "0303";
-	return "UNKNOWN_PROTOCOL_$number";
-}
-
-sub get_client_hello_v2 {
-	my ($ciphersuites_hex) = @_;
-	my @packet_hex;
-	push @packet_hex, qw(80); # bit 1: 2 byte header; bit 2: no security escapes, bits 3-8: high length bits
-	push @packet_hex, sprintf("%02x", 0x1c + length($ciphersuites_hex) / 2);
-	push @packet_hex, qw(01); # client hello
-	push @packet_hex, qw(0002); # version 2.0
-	push @packet_hex, sprintf("%04x", length($ciphersuites_hex) / 2);
-	push @packet_hex, qw(0000); # session id length
-	push @packet_hex, qw(0010); # challenge length
-	push @packet_hex, $ciphersuites_hex . "001122"; #  TODO what's this 1122 bit?
-	my $r = "";
-	for (1..16) {
-		my $rand = sprintf "%02x", int(rand(255));
-		$r .= $rand;
-	}
-	push @packet_hex, $r; # challenge
-	my $string = join("", @packet_hex);
-	$string =~ s/(..)/sprintf("%c", hex($1))/ge;
-
-	return $string;
-}
-
 sub get_socket {
 	my $socket = new IO::Socket::INET (
-		PeerHost => $host,
+		PeerHost => $ip,
 		PeerPort => $port,
 		Proto => 'tcp',
 	) or die "ERROR in Socket Creation : $!\n";
 	return $socket;
+}
+
+# test_v3_cipher_suites:
+#  arg1: protocol e.g. "0301"
+#  arg2: list of cipher suites, e.g. ("0011", "C022")
+# returns:
+#  2 if server doesn't support the protocol
+#  1 if one of the supplied ciphersuites if valid
+#  0 if none are valid
+sub test_v3_ciphersuites {
+	my ($protocol, @ciphersuites) = @_;
+	printf "[D] Checking Cipher Suites: %s %s\n", get_protocol_name($protocol), join(",", map { get_cc_name($_) } @ciphersuites) if $debug > 0;
+	print "[+] Connecting to $host:$port\n" if $debug > 1;
+	my $socket = get_socket();
+	
+	my $string = get_client_hello_v3($protocol, @ciphersuites);
+	my $protocol_bin = $protocol;
+	$protocol_bin =~ s/\s//g;
+	$protocol_bin =~ s/(..)/sprintf("%c", hex($1))/ge;
+	
+	print "[+] Sending:\n" if $debug > 1;
+	hdump($string) if $debug > 1;
+	
+	print $socket $string;
+	
+	my $data;
+	$socket->recv($data,5);
+	print "[+] Received from Server :\n" if $debug > 1;
+	hdump($data) if $debug > 1;
+
+	my $ccname = join(",", map { get_cc_name($_) } @ciphersuites);
+	my @data = split("", $data);
+	if (scalar(@data) > 0) {
+		my $length = (ord($data[3]) << 8) + ord($data[4]);
+		printf "[+] Initial length: %d\n", $length if $debug > 1;
+		my $data2;
+		$socket->recv($data2,$length);
+		print "[+] Received from Server :\n" if $debug > 1;
+		hdump($data2) if $debug > 1;
+		$data = $data . $data2;
+		@data = split("", $data);
+
+		if ($data[1] . $data[2] ne $protocol_bin) {
+			printf "[+] Protocol %s is not supported.  Skipping.\n", get_protocol_name($protocol);
+			return 2;
+		}
+		if ($data[0] eq "\x15") {
+			if ($data[6] eq "\x28") {
+				printf "[+] Cipher suite NOT supported.  Probed for %s %s, Reply protocol: %s\n", get_protocol_name($protocol), $ccname, ord($data[1]) . "." . ord($data[2]) if $debug > 0;
+			} else {
+				printf "[+] Packet type 'Alert' for protocol %s cipher suite %s: %02x\n", $protocol, $ccname, ord($data[0]);
+				printf "[+] Protocol: %d.%d\n", ord($data[1]), ord($data[2]) if $debug > 1;
+				printf "[+] Alert Level (2 is fatal): %02x\n", ord($data[5]) if $debug > 1;
+				printf "[+] Alert description (0x28 is Handshake failure): %02x\n", ord($data[6]) if $debug > 1;
+			}
+
+		} elsif ($data[0] eq "\x16") {
+			my $sidlen = ord($data[43]);
+			my $ccpos = $sidlen + 44;
+			my $neg_cc = sprintf("%02x%02x",ord($data[$ccpos]), ord($data[$ccpos+1]));
+			my $neg_cc_name = get_cc_name($neg_cc);
+			printf "[+] Cipher suite supported.  Probed for: %s %s [%s], Negotiated: %s\n", get_protocol_name($protocol), $ccname, get_protocol_name(sprintf("%02x%02x", ord($data[1]), ord($data[2]))), $neg_cc_name;
+			printf "[+] packet type (should be 0x02 for Server Hello): %02x\n", ord($data[5]) if $debug > 1;
+			printf "[+] Cipher Suite: %02x%02x\n", ord($data[44]), ord($data[45]) if $debug > 1;
+			return 1;
+		} else {
+			printf "[+] Packet type (should be 0x16) for protocol %d.%d, cipher suite %s: %02x\n", ord($data[1]), ord($data[2]), $ccname, ord($data[0]);
+		printf "[+] Protocol: %d.%d\n", ord($data[1]), ord($data[2]);
+			printf "[+] packet type (should be 0x02 for Server Hello): %02x\n", ord($data[5]);
+			printf "[+] Protocol2: %d.%d\n", ord($data[9]), ord($data[10]);
+			printf "[+] Server time: %02x%02x%02x%02x\n", ord($data[11]), ord($data[12]), ord($data[13]), ord($data[14]);
+			printf "[+] Cipher Suite: %02x%02x\n", ord($data[44]), ord($data[45]);
+			printf "[+] Compression: %02x\n", ord($data[46]);
+		}
+	}
+	return 0;
 }

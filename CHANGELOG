@@ -1,0 +1,10 @@
+
+2012-07-01 ssl-cipher-suite-enum v0.2
+
+* Lowercased cipher suite (hex) numbers for consistency.
+* Check hostname resolves.  Only result it once - not once per TCP connection
+* Print out resolved IP address
+* Change order that protocols are tested in: SSLv2 -> TLSv1.2
+* Prints total number of supported cipher suites for each proto
+* Print runtime, end time
+* 4 x speedup by grouping unpopular cipher suites into a single client hello
