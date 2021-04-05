@@ -1,4 +1,11 @@
 
+2014-10-15 ssl-cipher-suite-enum v1.0.0
+
+* Timeout can now be set from command line
+* Added some newer cipher suites
+* Added check for RC4 bias issue
+* Added check for POODLE issue
+
 2013-02-13 ssl-cipher-suite-enum v0.9.9
 
 * 10 second timeout for recv to avoid hanging

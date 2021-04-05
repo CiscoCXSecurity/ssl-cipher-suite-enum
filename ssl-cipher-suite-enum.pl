@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 # ssl-cipher-suite-enum
-# Copyright (C) 2012 Mark lowe (mrl@portcullis-security.com)
+# Copyright (C) 2014 Mark lowe (mrl@portcullis-security.com)
 # 
 # This tool may be used for legal purposes only.  Users take full responsibility
 # for any actions performed using this tool.  The author accepts no liability
@@ -30,7 +30,7 @@ use warnings;
 use IO::Socket::INET;
 use Getopt::Long;
 
-my $VERSION = "0.9.9";
+my $VERSION = "1.0.0";
 my $usage = "ssl-cipher-suite-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
@@ -114,6 +114,7 @@ my $result = GetOptions (
          "ftp"        => \$global_ftp,
          "file=s"     => \$hostfile,
          "rate=s"     => \$global_rate,
+         "timeout_recv=s"     => \$global_recv_timeout,
          "outfile=s"  => \$outfile,
          "verbose"    => \$verbose,
          "debug"      => \$debug,
@@ -507,26 +508,30 @@ my $ciphersuitenamestring = "
 0xC099	TLS_RSA_PSK_WITH_CAMELLIA_256_CBC_SHA384	[RFC6367]
 0xC09A	TLS_ECDHE_PSK_WITH_CAMELLIA_128_CBC_SHA256	[RFC6367]
 0xC09B	TLS_ECDHE_PSK_WITH_CAMELLIA_256_CBC_SHA384	[RFC6367]
-0xC09C	TLS_RSA_WITH_AES_128_CCM	[draft-mcgrew-tls-aes-ccm-04]
-0xC09D	TLS_RSA_WITH_AES_256_CCM	[draft-mcgrew-tls-aes-ccm-04]
-0xC09E	TLS_DHE_RSA_WITH_AES_128_CCM	[draft-mcgrew-tls-aes-ccm-04]
-0xC09F	TLS_DHE_RSA_WITH_AES_256_CCM	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A0	TLS_RSA_WITH_AES_128_CCM_8	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A1	TLS_RSA_WITH_AES_256_CCM_8	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A2	TLS_DHE_RSA_WITH_AES_128_CCM_8	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A3	TLS_DHE_RSA_WITH_AES_256_CCM_8	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A4	TLS_PSK_WITH_AES_128_CCM	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A5	TLS_PSK_WITH_AES_256_CCM	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A6	TLS_DHE_PSK_WITH_AES_128_CCM	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A7	TLS_DHE_PSK_WITH_AES_256_CCM	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A8	TLS_PSK_WITH_AES_128_CCM_8	[draft-mcgrew-tls-aes-ccm-04]
-0xC0A9	TLS_PSK_WITH_AES_256_CCM_8	[draft-mcgrew-tls-aes-ccm-04]
-0xC0AA	TLS_PSK_DHE_WITH_AES_128_CCM_8	[draft-mcgrew-tls-aes-ccm-04]
-0xC0AB	TLS_PSK_DHE_WITH_AES_256_CCM_8	[draft-mcgrew-tls-aes-ccm-04]
+0xC09C	TLS_RSA_WITH_AES_128_CCM	[RFC6655]
+0xC09D	TLS_RSA_WITH_AES_256_CCM	[RFC6655]
+0xC09E	TLS_DHE_RSA_WITH_AES_128_CCM	[RFC6655]
+0xC09F	TLS_DHE_RSA_WITH_AES_256_CCM	[RFC6655]
+0xC0A0	TLS_RSA_WITH_AES_128_CCM_8	[RFC6655]
+0xC0A1	TLS_RSA_WITH_AES_256_CCM_8	[RFC6655]
+0xC0A2	TLS_DHE_RSA_WITH_AES_128_CCM_8	[RFC6655]
+0xC0A3	TLS_DHE_RSA_WITH_AES_256_CCM_8	[RFC6655]
+0xC0A4	TLS_PSK_WITH_AES_128_CCM	[RFC6655]
+0xC0A5	TLS_PSK_WITH_AES_256_CCM	[RFC6655]
+0xC0A6	TLS_DHE_PSK_WITH_AES_128_CCM	[RFC6655]
+0xC0A7	TLS_DHE_PSK_WITH_AES_256_CCM	[RFC6655]
+0xC0A8	TLS_PSK_WITH_AES_128_CCM_8	[RFC6655]
+0xC0A9	TLS_PSK_WITH_AES_256_CCM_8	[RFC6655]
+0xC0AA	TLS_PSK_DHE_WITH_AES_128_CCM_8	[RFC6655]
+0xC0AB	TLS_PSK_DHE_WITH_AES_256_CCM_8	[RFC6655]
 0xFEFE	SSL_RSA_FIPS_WITH_DES_CBC_SHA	http://www.mozilla.org/projects/security/pki/nss/ssl/fips-ssl-ciphersuites.html
 0xFEFF	SSL_RSA_FIPS_WITH_3DES_EDE_CBC_SHA	http://www.mozilla.org/projects/security/pki/nss/ssl/fips-ssl-ciphersuites.html
 0xFFE0	SSL_RSA_FIPS_WITH_3DES_EDE_CBC_SHA	http://www.mozilla.org/projects/security/pki/nss/ssl/fips-ssl-ciphersuites.html
 0xFFE1	SSL_RSA_FIPS_WITH_DES_CBC_SHA	http://www.mozilla.org/projects/security/pki/nss/ssl/fips-ssl-ciphersuites.html
+0xC0AC  TLS_ECDHE_ECDSA_WITH_AES_128_CCM    [RFC-mcgrew-tls-aes-ccm-ecc-08]
+0xC0AD  TLS_ECDHE_ECDSA_WITH_AES_256_CCM    [RFC-mcgrew-tls-aes-ccm-ecc-08]
+0xC0AE  TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8  [RFC-mcgrew-tls-aes-ccm-ecc-08]
+0xC0AF  TLS_ECDHE_ECDSA_WITH_AES_256_CCM_8  [RFC-mcgrew-tls-aes-ccm-ecc-08]
 
 
 #define TLS1_CK_RSA_EXPORT1024_WITH_RC4_56_MD5          0x03000060
@@ -678,6 +683,7 @@ foreach my $line (split "\n", $ciphersuitenamestring) {
 		$nameofcc{uc $2} = $1;
 		$numberofcc{$1} = uc $2;
 	}
+	# 0x002F  TLS_RSA_WITH_AES_128_CBC_SHA    [RFC5246]
 	if ($line =~ /^0x([0-9a-fA-F]{4})\s+(?:SSL|TLS)_(\S+)/) {
 		$nameofcc{uc $1} = $2;
 		$numberofcc{$2} = uc $1;
@@ -704,13 +710,14 @@ print "\n";
 sub scan_host {
 	my ($host, $ip, $port) = @_;
 	print_section("Scan Info");
-	print "Target:    $host\n";
-	print "IP:        $ip\n";
-	print "Port:      $port\n";
-	print "Protocols: $protos_to_test\n";
-	print "Persist:   $global_persist\n";
-	printf "Preamble:  %s%s%s%s\n", $global_ftp ? "FTP" : "", $global_rdp ? "RDP" : "", $global_smtp ? "SMTP" : "", ($global_rdp == 0 and $global_smtp == 0 and $global_ftp == 0) ? "None" : "";
-	printf "Scan Rate: %s\n", defined($global_rate) ? $global_rate . " connections/sec" : "unlimited";
+	print "Target:       $host\n";
+	print "IP:           $ip\n";
+	print "Port:         $port\n";
+	print "Protocols:    $protos_to_test\n";
+	print "Persist:      $global_persist\n";
+	printf "Preamble:     %s%s%s%s\n", $global_ftp ? "FTP" : "", $global_rdp ? "RDP" : "", $global_smtp ? "SMTP" : "", ($global_rdp == 0 and $global_smtp == 0 and $global_ftp == 0) ? "None" : "";
+	printf "Scan Rate:    %s\n", defined($global_rate) ? $global_rate . " connections/sec" : "unlimited";
+	printf "Recv Timeout: %s\n", $global_recv_timeout;
 
 	$global_connection_count = 0; # need to reset for each host for accurate scan rate
 
@@ -720,12 +727,14 @@ sub scan_host {
 		my $cc_supported = 0;
 		my @supported_ciphersuites = ();
 		my $some_beast = 0;
+		my $some_poodle = 0;
 		my $most_beast = 0;
 		my $some_nofs = 0;
 		my $most_nofs = 0;
 		my $null_encryption = 0;
 		my $weak_encryption = 0;
 		my $anon_dh = 0;
+		my $bias = 0;
 		if ($protocol eq "0200") {
 			foreach my $ciphersuite (qw(000000 010080 020080 030080 040080 050080 060040 060140 0700c0 0701c0 080080 ff0800 ff0810 0000ff)) {
 				my $supported = test_v2_ciphersuites($ip, $port, $protocol, $ciphersuite);
@@ -747,6 +756,9 @@ sub scan_host {
 					if (vuln_to_beast($protocol, $supported)) {
 						$some_beast = 1;
 					}
+					if (vuln_to_poodle($protocol, $supported)) {
+						$some_poodle = 1;
+					}
 					if (uses_forward_secrecy($protocol, $supported)) {
 						$some_nofs = 1;
 					}
@@ -758,6 +770,9 @@ sub scan_host {
 					}
 					if (uses_anon_dh($protocol, $supported)) {
 						$anon_dh = 1;
+					}
+					if (uses_RC4($protocol, $supported)) {
+			                        $bias = 1;
 					}
 				# Some servers close connection when an unsupported cipher suite is encountered
 				# Some reply
@@ -827,6 +842,9 @@ sub scan_host {
 						if (vuln_to_beast($protocol, $supported)) {
 							$some_beast = 1;
 						}
+						if (vuln_to_poodle($protocol, $supported)) {
+							$some_poodle = 1;
+						}
 						if (uses_forward_secrecy($protocol, $supported)) {
 							$some_nofs = 1;
 						}
@@ -839,6 +857,9 @@ sub scan_host {
 						if (uses_anon_dh($protocol, $supported)) {
 							$anon_dh = 1;
 						}
+						if (uses_RC4($protocol, $supported)) {
+                        $bias = 1;
+                        }
 					# Some servers close connection when an unsupported cipher suite is encountered
 					# Some reply
 					# And some do both, so we need to check again here in case we get a reply
@@ -877,6 +898,9 @@ sub scan_host {
 		} elsif ($some_beast) {
 			print "[V] $ip:$port - Some clients could be vulnerable to BEAST attack - if HTTPS service\n";
 		}
+		if ($some_poodle) {
+			print "[V] $ip:$port - Some clients could be vulnerable to POODLE attack\n";
+		}
 		if ($weak_encryption) {
 			print "[V] $ip:$port - Some connections might be protected with a weak (<128-bit) symmetric encryption key\n";
 		}
@@ -885,6 +909,9 @@ sub scan_host {
 		}
 		if ($anon_dh) {
 			print "[V] $ip:$port - Server supports a key-exchange algorithm that is vulnerable to man-in-the-middle attack (anonymous Diffie Hellman)\n";
+		}
+		if ($bias) {
+            print "[V] $ip:$port - RC4-based SSL Cipher Suites Vulnerable To Bias Attacks\n";
 		}
 		if ($most_nofs) {
 			print "[V] $ip:$port - Most encrypted connections will not use forward secrecy\n";
@@ -1005,9 +1032,11 @@ sub get_client_hello_v3 {
 	my @packet_hex;
 	push @packet_hex, qw(16); # content type: handshake (22)
 	push @packet_hex, $protocol;
-	push @packet_hex, sprintf("%04x", 0x2B + 6 + length($ciphersuites_hex) / 2);
+	#push @packet_hex, sprintf("%04x", 0x2B + 6 + length($ciphersuites_hex) / 2);
+	push @packet_hex, sprintf("%04x", 0x2B + 1 + length($ciphersuites_hex) / 2);
 	push @packet_hex, qw(01); # client hello
-	push @packet_hex, sprintf("%06x", 0x27 + 6 + length($ciphersuites_hex) / 2);
+	#push @packet_hex, sprintf("%06x", 0x27 + 6 + length($ciphersuites_hex) / 2);
+	push @packet_hex, sprintf("%06x", 0x27 + 1 + length($ciphersuites_hex) / 2);
 	push @packet_hex, $protocol;
 	push @packet_hex, qw(4f de d1 b9); # time
 	push @packet_hex, qw(e4 60 78 36 ad fb d6  26 bb f3 0f b5 0d 6c e0 cf 8f 34 06 28 03 93 2e  cf 24 29 38 ff); # random
@@ -1017,10 +1046,10 @@ sub get_client_hello_v3 {
 	push @packet_hex, qw(02); # compression methods length
 	push @packet_hex, qw(01); # deflate
 	push @packet_hex, qw(00); # compression: null
-	push @packet_hex, qw(00 04); # compression methods length
-	push @packet_hex, qw(00 23); # compression methods length
-	push @packet_hex, qw(00); # deflate
-	push @packet_hex, qw(00); # compression: null
+	#push @packet_hex, qw(00 04); # compression methods length
+	#push @packet_hex, qw(00 23); # compression methods length
+	#push @packet_hex, qw(00); # deflate
+	#push @packet_hex, qw(00); # compression: null
 		
 	my $string = join("", @packet_hex);
 	$string =~ s/(..)/sprintf("%c", hex($1))/ge;
@@ -1108,6 +1137,7 @@ sub test_v3_ciphersuites {
 	printf "[D] Checking Cipher Suites: %s %s\n", get_protocol_name($protocol), join(",", map { get_cc_name($_) } @ciphersuites) if $debug > 0;
 	print "[+] Connecting to $ip:$port\n" if $debug > 1;
 	my $socket = get_socket($ip, $port);
+	return -1 unless $socket;
 	
 	my $string = get_client_hello_v3($protocol, @ciphersuites);
 	my $protocol_bin = $protocol;
@@ -1218,6 +1248,7 @@ sub test_v2_ciphersuites {
 	# printf "[D] Checking Cipher Suite: %s %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
 	print "[+] Connecting to $ip:$port\n" if $debug > 1;
 	my $socket = get_socket($ip, $port);
+	return -1 unless $socket;
 	my $string = get_client_hello_v2($protocol, @ciphersuites);	
 
 	# send client hello
@@ -1309,10 +1340,12 @@ sub get_warnings_array {
 	my @warnings = ();
 	push @warnings, "SSL2_INSEC" if $protocol =~ /^02/;
 	push @warnings, "BEAST"      if vuln_to_beast($protocol, $cc);
+	push @warnings, "POODLE"     if vuln_to_poodle($protocol, $cc);
 	push @warnings, "NO_PFS"     unless uses_forward_secrecy($protocol, $cc);
 	push @warnings, "NULL_ENC"   if uses_null_cipher($cc);
 	push @warnings, "WEAK_ENC"   if uses_weak_cipher($cc);
 	push @warnings, "ANON_DH"    if uses_anon_dh($protocol, $cc);
+	push @warnings, "BIAS"       if uses_RC4($protocol,$cc);
 	return @warnings;
 }
 
@@ -1335,6 +1368,19 @@ sub vuln_to_beast {
 	}
 
 	if ($protocol_name !~ /TLSv1\.[12]/ and $cc_name !~ /(RC4|NULL)/) {
+		return 1;
+	}
+	
+	return 0;
+}
+
+sub vuln_to_poodle {
+	my ($protocol, $cc) = @_;
+	my $cc_name = get_cc_name($cc);
+	my $protocol_name = get_protocol_name($protocol);
+
+	# SSLv3.0 with block cipher
+	if ($protocol_name eq "SSLv3.0" and $cc_name !~ /(RC4|NULL)/) {
 		return 1;
 	}
 	
@@ -1436,6 +1482,16 @@ sub uses_anon_dh {
 	return 0;
 }
 
+sub uses_RC4 {
+    my ($protocol, $cc) = @_;
+    my $cc_name = get_cc_name($cc);
+    if ($cc_name =~ /RC4/) {
+        return 1;
+    }
+
+    return 0;
+}
+
 sub do_rdp_preamble {
 	my $socket = shift;
 	my @packet = qw(03 00  00 13 0e e0 00 00 00 00 00 01 00 08 00 03 00 00  00);
@@ -1533,4 +1589,5 @@ sub PRINTF {
 }
 
 1;
+
 
