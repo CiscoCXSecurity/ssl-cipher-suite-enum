@@ -1,10 +1,19 @@
 
-2012-12-25 ssl-cipher-suite-enum v0.9.4
+2013-02-13 ssl-cipher-suite-enum v0.9.9
+
+* 10 second timeout for recv to avoid hanging
+* Aborts testing after 5 connection failures - to avoid looping
+* Bug fix: --ftp option improvements (for AUTH SSL)
+* Bug fix: Now reports correct results when multiple hosts are scanned
+* Fixed some typos
+* Bug fix: Avoid looping if SSLv2 close connection early
+
+2012-10-25 ssl-cipher-suite-enum v0.9.4
 
 * Added --ftp option to enumerate cipher suites supported by FTP servers
   via (AUTH SSL).
 
-2012-12-10 ssl-cipher-suite-enum v0.9.3
+2012-10-10 ssl-cipher-suite-enum v0.9.3
 
 * Added --persist option.  Some servers close connection immediately
   which we misinterpret as that SSL protocol not being supported.

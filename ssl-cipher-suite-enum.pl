@@ -30,11 +30,11 @@ use warnings;
 use IO::Socket::INET;
 use Getopt::Long;
 
-my $VERSION = "0.9.4";
+my $VERSION = "0.9.9";
 my $usage = "ssl-cipher-suite-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
-ssl-cipher-suite-enum.pl [ options ] ( -f hosts.txt | host | host:port )
+ssl-cipher-suite-enum.pl [ options ] ( --file hosts.txt | host | host:port )
 
 options are:
   --sslv2_0 or --sslv2
@@ -93,6 +93,8 @@ my $global_rdp = 0;
 my $global_smtp = 0;
 my $global_ftp = 0;
 my $global_persist = 0;
+my $global_recv_timeout = 10;
+my $global_connect_fail_count = 5;
 
 my $result = GetOptions (
          "sslv2_0"    => \$sslv2_0,
@@ -151,6 +153,8 @@ if (defined($outfile)){
 	select(TEE); 
 	*STDERR = *TEE; 
 }
+
+$global_persist = 1 if $global_ftp;
 
 my @protos_to_test = ();
 
@@ -689,6 +693,7 @@ printf "\n[+] Scanning %s hosts\n", scalar @targets;
 print Dumper \@targets if $debug > 0;
 
 foreach my $target_href (@targets) {
+	%results = ();
 	scan_host($target_href->{hostname}, $target_href->{ip}, $target_href->{port});
 }
 
@@ -801,7 +806,7 @@ sub scan_host {
 				}
 			}
 	
-			if ($protocol_supported) {
+			if ($protocol_supported or $global_persist) {
 				ciphersuite: foreach my $ciphersuite (@cc_todo_individually) {
 					my $supported = test_v3_ciphersuites($ip, $port, $protocol, $ciphersuite);
 					if (length($supported) == 4) {
@@ -879,7 +884,7 @@ sub scan_host {
 			print "[V] $ip:$port - Some connections might not be encrypted (NULL encryption cipher)\n";
 		}
 		if ($anon_dh) {
-			print "[V] $ip:$port - Server support a key-exchange algorithm that is vulnerable to man-in-the-middle attack (anonymous Diffie Hellman)\n";
+			print "[V] $ip:$port - Server supports a key-exchange algorithm that is vulnerable to man-in-the-middle attack (anonymous Diffie Hellman)\n";
 		}
 		if ($most_nofs) {
 			print "[V] $ip:$port - Most encrypted connections will not use forward secrecy\n";
@@ -996,20 +1001,25 @@ sub get_client_hello_v2 {
 
 sub get_client_hello_v3 {
 	my ($protocol, @ciphersuites_hex) = @_;
-	my $ciphersuites_hex = join("", @ciphersuites_hex);
+	my $ciphersuites_hex = join("", @ciphersuites_hex, "00", "ff");
 	my @packet_hex;
 	push @packet_hex, qw(16); # content type: handshake (22)
 	push @packet_hex, $protocol;
-	push @packet_hex, sprintf("%04x", 0x2B + length($ciphersuites_hex) / 2);
+	push @packet_hex, sprintf("%04x", 0x2B + 6 + length($ciphersuites_hex) / 2);
 	push @packet_hex, qw(01); # client hello
-	push @packet_hex, sprintf("%06x", 0x27 + length($ciphersuites_hex) / 2);
+	push @packet_hex, sprintf("%06x", 0x27 + 6 + length($ciphersuites_hex) / 2);
 	push @packet_hex, $protocol;
 	push @packet_hex, qw(4f de d1 b9); # time
 	push @packet_hex, qw(e4 60 78 36 ad fb d6  26 bb f3 0f b5 0d 6c e0 cf 8f 34 06 28 03 93 2e  cf 24 29 38 ff); # random
 	push @packet_hex, qw(00); # session id length
 	push @packet_hex, sprintf("%04x", length($ciphersuites_hex) / 2);
 	push @packet_hex, $ciphersuites_hex;
-	push @packet_hex, qw(01); # compression methods length
+	push @packet_hex, qw(02); # compression methods length
+	push @packet_hex, qw(01); # deflate
+	push @packet_hex, qw(00); # compression: null
+	push @packet_hex, qw(00 04); # compression methods length
+	push @packet_hex, qw(00 23); # compression methods length
+	push @packet_hex, qw(00); # deflate
 	push @packet_hex, qw(00); # compression: null
 		
 	my $string = join("", @packet_hex);
@@ -1019,15 +1029,34 @@ sub get_client_hello_v3 {
 
 sub get_socket {
 	my ($ip, $port) = @_;
-	if (defined($global_rate) and get_scan_rate() > $global_rate) {
-		select(undef, undef, undef, 0.1); # sleep
+	my $socket = undef;
+	my $failcount = 0;
+	while (!defined($socket)) {
+		while (defined($global_rate) and get_scan_rate() > $global_rate) {
+			select(undef, undef, undef, 0.1); # sleep
+		}
+		$global_connection_count++;
+		eval {
+			local $SIG{ALRM} = sub { die "alarm\n" };
+			alarm($global_recv_timeout);
+			$socket = new IO::Socket::INET (
+				PeerHost => $ip,
+				PeerPort => $port,
+				Proto => 'tcp',
+			) or print "WARNING in Socket Creation : $!\n";
+			alarm(0);
+		};
+		if ($@) {
+			print "[W] Timeout on connect.  Retrying...\n";
+			return undef;
+		}
+		unless (defined($socket)) {
+			$failcount++;
+		}
+		if ($failcount > $global_connect_fail_count) {
+			die "ERROR: failed to connect too many times\n";
+		}
 	}
-	my $socket = new IO::Socket::INET (
-		PeerHost => $ip,
-		PeerPort => $port,
-		Proto => 'tcp',
-	) or die "ERROR in Socket Creation : $!\n";
-	$global_connection_count++;
 	if ($global_rdp) {
 		do_rdp_preamble($socket);
 	}
@@ -1047,8 +1076,18 @@ sub recv_all {
 	my $data = "";
 	my $data2 = "";
 	while (length($data) < $length) {
-		$socket->recv($data2, $length);
+		eval {
+			local $SIG{ALRM} = sub { die "alarm\n" };
+			alarm($global_recv_timeout);
+			$socket->recv($data2, $length);
+			alarm(0);
+		};
+		if ($@) {
+			print "[W] Timeout on recv.  Results may be unreliable.\n";
+			return undef;
+		}
 		$data .= $data2;
+
 		# If we read 0, then the socket has been closed by remote end.  We must abort reading.
 		if (length($data2) == 0) {
 			return $data;
@@ -1081,8 +1120,14 @@ sub test_v3_ciphersuites {
 	print $socket $string;
 	
 	my $data = recv_all($socket, 5);
+	return -1 unless defined($data);
 	print "[+] Received from Server :\n" if $debug > 1;
 	hdump($data) if $debug > 1;
+
+	# FTP protocol message saying SSL handsake failed
+	if ($global_ftp and $data =~ /^4/) {
+		return -1;
+	}
 
 	my $ccname = join(",", map { get_cc_name($_) } @ciphersuites);
 	my @data = split("", $data);
@@ -1090,6 +1135,7 @@ sub test_v3_ciphersuites {
 		my $length = (ord($data[3]) << 8) + ord($data[4]);
 		printf "[+] Initial length: %d\n", $length if $debug > 1;
 		my $data2 = recv_all($socket, $length);
+		return -1 unless defined($data2);
 		print "[+] Received from Server :\n" if $debug > 1;
 		hdump($data2) if $debug > 1;
 		$data = $data . $data2;
@@ -1181,6 +1227,7 @@ sub test_v2_ciphersuites {
 	
 	# recv server hello (or alert).  first read length of packet
 	my $data = recv_all($socket, 2);
+	return -1 unless defined($data);
 	print "[+] Received from Server :\n"  if $debug > 1;
 	hdump($data) if $debug > 1;
 	
@@ -1189,12 +1236,13 @@ sub test_v2_ciphersuites {
 		my $length = ((ord($data[0]) & 0x7f) << 8) + ord($data[1]);
 		printf "[+] Initial length: %d\n", $length if $debug > 1;
 		my $data2 = recv_all($socket, $length);
+		return -1 unless defined($data2);
 		print "[+] Received from Server :\n" if $debug > 1;
 		hdump($data2) if $debug > 1;
 		$data = $data . $data2;
 		@data = split("", $data);
 
-		if ($length > 20) {
+		if (length($data2) == $length and $length > 20) {
 			printf "[+] Handshake message type (should be 4): %02x\n", ord($data[2]) if $debug > 1;
 			printf "[+] Protocol: %d.%d\n", ord($data[6]), ord($data[5]) if $debug > 1;
 			my $cs_len = sprintf "%02x%02x", ord($data[9]), ord($data[10]);
@@ -1228,7 +1276,7 @@ sub test_v2_ciphersuites {
 			print "[+] Short response received.  Not processing\n" if $debug > 1;
 		}
 	} else {
-		printf "[+] Cipher suite not supported (truncated packet): %s\n" if $debug > 0;
+		printf "[+] Cipher suite not supported (truncated packet)\n" if $debug > 0;
 	}
 	return -1;
 }
@@ -1349,8 +1397,10 @@ sub get_scan_rate {
 		$runtime = 0.1;
 	}
 
+	# printf "[D] rate: %s", $global_connection_count / $runtime;
 	return $global_connection_count / $runtime;
 }
+
 # Notes on PFS and RSA:
 #  RSA is sometimes used for the key exchange.  This lacks PFS:
 #   0x000A  TLS_RSA_WITH_3DES_EDE_CBC_SHA   [RFC5246]
@@ -1394,6 +1444,7 @@ sub do_rdp_preamble {
 	print $socket $packet;
 
 	my $data = recv_all($socket, 4);
+	return -1 unless defined($data);
 	print "[+] RDP Preamble - Received from Server :\n"  if $debug > 1;
 	hdump($data) if $debug > 1;
 
@@ -1402,6 +1453,7 @@ sub do_rdp_preamble {
 		my $length = ((ord($data[2]) & 0x7f) << 8) + ord($data[3]);
 		printf "[+] RDP Preamble - Initial length: %d\n", $length if $debug > 1;
 		$data = recv_all($socket, $length - 4);
+		return -1 unless defined($data);
 	}
 }
 
@@ -1425,12 +1477,25 @@ sub do_smtp_preamble {
 
 sub do_ftp_preamble {
 	my $socket = shift;
+	my $data;
+	my $last_line = 0;
 
-	# read banner - and hope it's only a single line!
-	my $data = readline($socket);
+	while (!$last_line) {
+		$data = readline($socket);
+		print "[+] FTP Banner - Received from Server :\n"  if $debug > 1;
+		hdump($data) if $debug > 1;
+		# 220-banner
+		# 220-more banner
+		# 220 last banner line
+		if ($data =~ /^2\d\d /) {
+			$last_line = 1;
+		}
+	}
 
 	my $packet = "AUTH SSL\r\n";
 	print $socket $packet;
+	print "[+] Sending FTP AUTH SSL\n" if $debug > 1;
+	hdump($packet) if $debug > 1;
 	$data = readline($socket);
 
 	print "[+] FTP Preamble - Received from Server :\n"  if $debug > 1;
