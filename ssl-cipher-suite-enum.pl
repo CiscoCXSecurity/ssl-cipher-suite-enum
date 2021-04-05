@@ -30,7 +30,7 @@ use warnings;
 use IO::Socket::INET;
 use Getopt::Long;
 
-my $VERSION = "0.9.3";
+my $VERSION = "0.9.4";
 my $usage = "ssl-cipher-suite-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
@@ -46,6 +46,7 @@ options are:
                      supported by the server (rarely needed)
   --rdp              Send RDP protocol preamble before talking SSL
   --smtp             Send SMTP STARTTLS before talking SSL
+  --ftp              Send FTP AUTH SSL talking SSL
   --file hosts.txt   Hosts to scan
   --outfile out.txt  Log output to file too
   --rate n           Limit to n connections/sec.  Default: unlimited
@@ -90,6 +91,7 @@ my %results = ();
 my $global_rate = undef;
 my $global_rdp = 0;
 my $global_smtp = 0;
+my $global_ftp = 0;
 my $global_persist = 0;
 
 my $result = GetOptions (
@@ -107,6 +109,7 @@ my $result = GetOptions (
          "sslv3_3"    => \$tlsv1_2,
          "rdp"        => \$global_rdp,
          "smtp"       => \$global_smtp,
+         "ftp"        => \$global_ftp,
          "file=s"     => \$hostfile,
          "rate=s"     => \$global_rate,
          "outfile=s"  => \$outfile,
@@ -701,7 +704,7 @@ sub scan_host {
 	print "Port:      $port\n";
 	print "Protocols: $protos_to_test\n";
 	print "Persist:   $global_persist\n";
-	printf "Preamble:  %s%s%s\n", $global_rdp ? "RDP" : "", $global_smtp ? "SMTP" : "", ($global_rdp == 0 and $global_smtp == 0) ? "None" : "";
+	printf "Preamble:  %s%s%s%s\n", $global_ftp ? "FTP" : "", $global_rdp ? "RDP" : "", $global_smtp ? "SMTP" : "", ($global_rdp == 0 and $global_smtp == 0 and $global_ftp == 0) ? "None" : "";
 	printf "Scan Rate: %s\n", defined($global_rate) ? $global_rate . " connections/sec" : "unlimited";
 
 	$global_connection_count = 0; # need to reset for each host for accurate scan rate
@@ -1031,6 +1034,9 @@ sub get_socket {
 	if ($global_smtp) {
 		do_smtp_preamble($socket);
 	}
+	if ($global_ftp) {
+		do_ftp_preamble($socket);
+	}
 	return $socket;
 }
 
@@ -1276,6 +1282,9 @@ sub vuln_to_beast {
 	if ($global_smtp) {
 		return 0;
 	}
+	if ($global_ftp) {
+		return 0;
+	}
 
 	if ($protocol_name !~ /TLSv1\.[12]/ and $cc_name !~ /(RC4|NULL)/) {
 		return 1;
@@ -1411,6 +1420,20 @@ sub do_smtp_preamble {
 	$data = readline($socket);
 
 	print "[+] SMTP Preamble - Received from Server :\n"  if $debug > 1;
+	hdump($data) if $debug > 1;
+}
+
+sub do_ftp_preamble {
+	my $socket = shift;
+
+	# read banner - and hope it's only a single line!
+	my $data = readline($socket);
+
+	my $packet = "AUTH SSL\r\n";
+	print $socket $packet;
+	$data = readline($socket);
+
+	print "[+] FTP Preamble - Received from Server :\n"  if $debug > 1;
 	hdump($data) if $debug > 1;
 }
 
