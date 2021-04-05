@@ -30,7 +30,7 @@ use warnings;
 use IO::Socket::INET;
 use Getopt::Long;
 
-my $VERSION = "0.9.2";
+my $VERSION = "0.9.3";
 my $usage = "ssl-cipher-suite-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
@@ -42,6 +42,8 @@ options are:
   --tlsv1_0 or --tlsv1 or --sslv3_1
   --tlsv1_1 or --sslv3_2
   --tlsv1_2 or --sslv3_3
+  --persist          Keep trying when protocol doesn't seem to be 
+                     supported by the server (rarely needed)
   --rdp              Send RDP protocol preamble before talking SSL
   --smtp             Send SMTP STARTTLS before talking SSL
   --file hosts.txt   Hosts to scan
@@ -88,6 +90,7 @@ my %results = ();
 my $global_rate = undef;
 my $global_rdp = 0;
 my $global_smtp = 0;
+my $global_persist = 0;
 
 my $result = GetOptions (
          "sslv2_0"    => \$sslv2_0,
@@ -109,6 +112,7 @@ my $result = GetOptions (
          "outfile=s"  => \$outfile,
          "verbose"    => \$verbose,
          "debug"      => \$debug,
+         "persist"    => \$global_persist,
          "help"       => \$help
 );
 
@@ -696,6 +700,7 @@ sub scan_host {
 	print "IP:        $ip\n";
 	print "Port:      $port\n";
 	print "Protocols: $protos_to_test\n";
+	print "Persist:   $global_persist\n";
 	printf "Preamble:  %s%s%s\n", $global_rdp ? "RDP" : "", $global_smtp ? "SMTP" : "", ($global_rdp == 0 and $global_smtp == 0) ? "None" : "";
 	printf "Scan Rate: %s\n", defined($global_rate) ? $global_rate . " connections/sec" : "unlimited";
 
@@ -782,7 +787,9 @@ sub scan_host {
 						push @cc_todo_individually, @cc_chunk;
 					} elsif ($supported == -2) {
 						$protocol_supported = 0;
-						last ciphersuite;
+						unless ($global_persist) {
+							last ciphersuite;
+						}
 					} elsif ($supported == -1) {
 						# none are valid.  we saved time by not trying individually
 					} else {
@@ -829,7 +836,9 @@ sub scan_host {
 					# And some do both, so we need to check again here in case we get a reply
 					} elsif ($supported == -2) {
 						$protocol_supported = 0;
-						last ciphersuite;
+						unless ($global_persist) {
+							last ciphersuite;
+						}
 					}
 				}
 	
@@ -1081,7 +1090,11 @@ sub test_v3_ciphersuites {
 		@data = split("", $data);
 
 		if ($data[1] . $data[2] ne $protocol_bin) {
-			printf "[+] Protocol %s is not supported.  Skipping.\n", get_protocol_name($protocol);
+			if ($global_persist) {
+				printf "[+] Protocol %s is not supported.  Continuing anyway...\n", get_protocol_name($protocol);
+			} else {
+				printf "[+] Protocol %s is not supported.  Skipping.\n", get_protocol_name($protocol);
+			}
 			return -2;
 		}
 		if ($data[0] eq "\x15") {
