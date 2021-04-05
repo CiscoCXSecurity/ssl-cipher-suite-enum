@@ -30,7 +30,7 @@ use warnings;
 use IO::Socket::INET;
 use Getopt::Long;
 
-my $VERSION = "0.9";
+my $VERSION = "0.9.1";
 my $usage = "ssl-cipher-suite-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
@@ -717,12 +717,12 @@ sub scan_host {
 			foreach my $ciphersuite (qw(000000 010080 020080 030080 040080 050080 060040 060140 0700c0 0701c0 080080 ff0800 ff0810 0000ff)) {
 				my $supported = test_v2_ciphersuites($ip, $port, $protocol, $ciphersuite);
 				if (length($supported) == 6) {
-					$cc_supported++;
 					push @supported_ciphersuites, $supported;
 					if ($supported eq $ciphersuite) {
 						printf "[+] Cipher suite supported on $ip:$port: %s %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_warnings($protocol, $supported);
+						$cc_supported++;
 					} else {
-						printf "[+] Cipher suite supported on $ip:$port:  %s %s, Probed for: %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_cc_name($ciphersuite), get_warnings($protocol, $supported);
+						printf "[!] Cipher suite supported on $ip:$port:  %s %s, Probed for: %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_cc_name($ciphersuite), get_warnings($protocol, $supported);
 					}
 					my @warnings = get_warnings_array($protocol, $supported);
 					foreach my $warning (@warnings) {
@@ -737,7 +737,7 @@ sub scan_host {
 					if (uses_forward_secrecy($protocol, $supported)) {
 						$some_nofs = 1;
 					}
-					if (get_cc_name($supported) =~ /WITH_NULL/) {
+					if (uses_null_cipher($supported)) {
 						$null_encryption = 1;
 					}
 					if (uses_weak_cipher($supported)) {
@@ -807,7 +807,7 @@ sub scan_host {
 						if ($supported eq $ciphersuite) {
 							printf "[+] Cipher suite supported on $ip:$port: %s %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_warnings($protocol, $supported);
 						} else {
-							printf "[+] Cipher suite supported on $ip:$port:  %s %s, Probed for: %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_cc_name($ciphersuite), get_warnings($protocol, $supported);
+							printf "[!] Cipher suite supported on $ip:$port:  %s %s, Probed for: %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_cc_name($ciphersuite), get_warnings($protocol, $supported);
 						}
 						if (vuln_to_beast($protocol, $supported)) {
 							$some_beast = 1;
@@ -815,7 +815,7 @@ sub scan_host {
 						if (uses_forward_secrecy($protocol, $supported)) {
 							$some_nofs = 1;
 						}
-						if (get_cc_name($supported) =~ /WITH_NULL/) {
+						if (uses_null_cipher($supported)) {
 							$null_encryption = 1;
 						}
 						if (uses_weak_cipher($supported)) {
@@ -905,6 +905,7 @@ sub scan_host {
 			print "\n";
 		}
 	}
+	print Dumper \%results if $debug;
 }
 
 sub get_cc_name_pretty {
@@ -1044,6 +1045,19 @@ sub get_socket {
 	return $socket;
 }
 
+# receives the specified amount of data
+# even if multiple recv calls are required
+sub recv_all {
+	my ($socket, $length) = @_;
+	my $data = "";
+	my $data2 = "";
+	while (length($data) < $length) {
+		$socket->recv($data2, $length);
+		$data .= $data2;
+	}
+	return $data;
+}
+
 # test_v3_cipher_suites:
 #  arg1: protocol e.g. "0301"
 #  arg2: list of cipher suites, e.g. ("0011", "C022")
@@ -1067,8 +1081,7 @@ sub test_v3_ciphersuites {
 	
 	print $socket $string;
 	
-	my $data;
-	$socket->recv($data,5);
+	my $data = recv_all($socket, 5);
 	print "[+] Received from Server :\n" if $debug > 1;
 	hdump($data) if $debug > 1;
 
@@ -1077,8 +1090,7 @@ sub test_v3_ciphersuites {
 	if (scalar(@data) > 0) {
 		my $length = (ord($data[3]) << 8) + ord($data[4]);
 		printf "[+] Initial length: %d\n", $length if $debug > 1;
-		my $data2;
-		$socket->recv($data2,$length);
+		my $data2 = recv_all($socket, $length);
 		print "[+] Received from Server :\n" if $debug > 1;
 		hdump($data2) if $debug > 1;
 		$data = $data . $data2;
@@ -1165,8 +1177,7 @@ sub test_v2_ciphersuites {
 	print $socket $string;
 	
 	# recv server hello (or alert).  first read length of packet
-	my $data;
-	$socket->recv($data,2);
+	my $data = recv_all($socket, 2);
 	print "[+] Received from Server :\n"  if $debug > 1;
 	hdump($data) if $debug > 1;
 	
@@ -1174,8 +1185,7 @@ sub test_v2_ciphersuites {
 	if (scalar(@data) > 0) {
 		my $length = ((ord($data[0]) & 0x7f) << 8) + ord($data[1]);
 		printf "[+] Initial length: %d\n", $length if $debug > 1;
-		my $data2;
-		$socket->recv($data2,$length);
+		my $data2 = recv_all($socket, $length);
 		print "[+] Received from Server :\n" if $debug > 1;
 		hdump($data2) if $debug > 1;
 		$data = $data . $data2;
@@ -1186,9 +1196,28 @@ sub test_v2_ciphersuites {
 			printf "[+] Protocol: %d.%d\n", ord($data[6]), ord($data[5]) if $debug > 1;
 			my $cs_len = sprintf "%02x%02x", ord($data[9]), ord($data[10]);
 			printf "[+] Cipher spec length (should be 3): %02x%02x\n", ord($data[9]), ord($data[10]) if $debug > 1;
-			if ($cs_len eq "0003") {
-				my $cc = sprintf "%02x%02x%02x", ord($data[-19]), ord($data[-18]), ord($data[-17]);
+
+			# Some servers will send a list of cipher suites even if we only send a single cipher suite
+			# The list may not even include a cipher suite that we sent!
+			# Therefore $cs_len is not always 0003 for a positive result.
+			my $cs_len_i = (ord($data[9]) << 8) + ord($data[10]);
+			if ($cs_len_i > 0 and $cs_len_i % 3 == 0) {
+				while ($cs_len_i > 0) {
+					my $selected_cc = sprintf "%02x%02x%02x", ord($data[-16 - $cs_len_i]), ord($data[-15 - $cs_len_i]), ord($data[-14 - $cs_len_i]);
+					$cs_len_i = $cs_len_i - 3;
+					# For each ciphersuite acceptable to the server...
+					foreach my $cc (@ciphersuites) {
+						# Check if it's one the client sent
+						if ($cc eq $selected_cc) {
+							# If it is, return normally
+							return $selected_cc;
+						}
+					}
+				}
+				# The server replied positively, but select a ciphersuite we didn't send.
+				# Return the first cipher suite
 				return sprintf "%02x%02x%02x", ord($data[-19]), ord($data[-18]), ord($data[-17]);
+			
 			} else {
 				print "[+] Unknown response.  Cipher spec length was 0\n" if $debug > 0;
 			}
@@ -1230,7 +1259,7 @@ sub get_warnings_array {
 	push @warnings, "SSL2_INSEC" if $protocol =~ /^02/;
 	push @warnings, "BEAST"      if vuln_to_beast($protocol, $cc);
 	push @warnings, "NO_PFS"     unless uses_forward_secrecy($protocol, $cc);
-	push @warnings, "NULL_ENC"   if $cc_name =~ /(WITH_NULL)/;
+	push @warnings, "NULL_ENC"   if uses_null_cipher($cc);
 	push @warnings, "WEAK_ENC"   if uses_weak_cipher($cc);
 	push @warnings, "ANON_DH"    if uses_anon_dh($protocol, $cc);
 	return @warnings;
@@ -1252,6 +1281,24 @@ sub vuln_to_beast {
 	}
 
 	if ($protocol_name !~ /TLSv1\.[12]/ and $cc_name !~ /(RC4|NULL)/) {
+		return 1;
+	}
+	
+	return 0;
+}
+
+sub uses_null_cipher {
+	my $cc = shift;
+	my $cc_name = get_cc_name($cc);
+	if ($cc_name =~ /NULL_SHA/) {
+		return 1;
+	}
+	
+	if ($cc_name =~ /NULL_MD5/) {
+		return 1;
+	}
+	
+	if ($cc_name =~ /NULL_WITH/) {
 		return 1;
 	}
 	
@@ -1340,8 +1387,7 @@ sub do_rdp_preamble {
 	$packet =~ s/(..)/sprintf("%c", hex($1))/ge;
 	print $socket $packet;
 
-	my $data;
-	$socket->recv($data,4);
+	my $data = recv_all($socket, 4);
 	print "[+] RDP Preamble - Received from Server :\n"  if $debug > 1;
 	hdump($data) if $debug > 1;
 
@@ -1349,7 +1395,7 @@ sub do_rdp_preamble {
 	if (scalar(@data) > 0) {
 		my $length = ((ord($data[2]) & 0x7f) << 8) + ord($data[3]);
 		printf "[+] RDP Preamble - Initial length: %d\n", $length if $debug > 1;
-		$socket->recv($data,$length - 4);
+		$data = recv_all($socket, $length - 4);
 	}
 }
 

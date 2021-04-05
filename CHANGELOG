@@ -1,4 +1,9 @@
 
+2012-07-19 ssl-cipher-suite-enum v0.9.1
+
+* Bug fix: better reporting of NULL ciphers
+* Bug fix: handles SSLv2 servers that off cipher suites client didn't offer
+
 2012-07-18 ssl-cipher-suite-enum v0.9
 
 * Changed program name in some places
