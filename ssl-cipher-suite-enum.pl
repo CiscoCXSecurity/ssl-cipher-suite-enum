@@ -28,30 +28,151 @@
 use strict;
 use warnings;
 use IO::Socket::INET;
-use Data::Dumper;
+use Getopt::Long;
 
-my $VERSION = "0.2-beta";
+my $VERSION = "0.4-beta";
 my $usage = "Starting ssl-cipher-enum v$VERSION ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ )
 Copyright (C) 2012 Mark Lowe (mrl\@portcullis-security.com)
 
-$0 host port
-";
-my $email = '';
-my $host = shift or die $usage;
-my $port = shift or die $usage;
-my $debug = shift;
-$debug = 0 unless defined($debug);
+ssl-cipher-suite-enum.pl [ options ] ( -f hosts.txt | host | host:port )
 
-my $ip =  gethostbyname($host);
-if (defined($ip)) {
-	$ip = inet_ntoa($ip);
-} else {
-	print "[E] Cannot resolve $host\n";
-	exit 1;
+options are:
+  --sslv2_0 or --sslv2
+  --sslv3_0 or --sslv3
+  --tlsv1_0 or --tlsv1 or --sslv3_1
+  --tlsv1_1 or --sslv3_2
+  --tlsv1_2 or --sslv3_3
+  --file hosts.txt
+  --outfile out.txt
+  --rate n   Limit to n connections/sec.  Default: unlimited
+  --verbose
+  --debug
+  --help
+
+Examples:
+
+ Scan for cipher suites supported by all SSL protocols:
+  ssl-cipher-suite-enum.pl www.example.com
+
+ Scan only SSLv2 cipher suites on port 8834:
+  ssl-cipher-suite-enum.pl --sslv2 www.example.com:8834
+
+ Scan only TLSv1.1 and TLSv1.2:
+  ssl-cipher-suite-enum.pl --tlsv1_1 --tlsv1_2 www.example.com
+
+ Scan a lots of hosts (each line is 'host' or 'host:port'):
+  ssl-cipher-suite-enum.pl --file hosts.txt
+
+";
+my $sslv2_0 = 0;
+my $sslv3_0 = 0;
+my $tlsv1_0 = 0;
+my $tlsv1_1 = 0;
+my $tlsv1_2 = 0;
+my $hostfile = undef;
+my $outfile  = undef;
+my $debug    = 0;
+my $verbose  = 0;
+my $global_connection_count = 0;
+my $help = 0;
+my %results = ();
+my $global_rate = undef;
+
+my $result = GetOptions (
+         "sslv2_0"   => \$sslv2_0,
+         "sslv2"     => \$sslv2_0,
+         "sslv3_0"   => \$sslv3_0,
+         "sslv3"     => \$sslv3_0,
+         "tlsv1_0"   => \$tlsv1_0,
+         "tlsv1"     => \$tlsv1_0,
+         "tlsv1_0"   => \$tlsv1_0,
+         "sslv3_1"   => \$tlsv1_0,
+         "tlsv1_1"   => \$tlsv1_1,
+         "sslv3_2"   => \$tlsv1_1,
+         "tlsv1_2"   => \$tlsv1_2,
+         "sslv3_3"   => \$tlsv1_2,
+         "file=s"    => \$hostfile,
+         "rate=s"    => \$global_rate,
+         "outfile=s"  => \$outfile,
+         "verbose"   => \$verbose,
+         "debug"     => \$debug,
+         "help"      => \$help
+);
+
+if ($help) {
+	print $usage;
+	exit 0;
 }
 
-# flush after every write
-$| = 1;
+if ($debug) {
+	use Data::Dumper;
+	use warnings FATAL => 'all';
+	use Carp qw(confess); # for debugging
+	$SIG{ __DIE__ } = sub { confess( @_ ) }; # for debugging
+}
+
+# If no options were supplied, test everything
+if ($sslv2_0 == 0 and $sslv3_0 == 0 and $tlsv1_0 == 0 and $tlsv1_1 == 0 and $tlsv1_2 == 0) {
+	$sslv2_0 = 1;
+	$sslv3_0 = 1;
+	$tlsv1_0 = 1;
+	$tlsv1_1 = 1;
+	$tlsv1_2 = 1;
+}
+
+if (defined($outfile)){
+	# http://stackoverflow.com/questions/1631873/copy-all-output-of-a-perl-script-into-a-file
+	use Symbol; 
+	my @handles = (*STDOUT); 
+	my $handle = gensym( );
+	push(@handles, $handle); 
+	open $handle, ">$outfile" or die "[E] Can't write to $outfile: $!\n"; #open for write, overwrite; 
+	tie *TEE, "Tie::Tee", @handles; 
+	select(TEE); 
+	*STDERR = *TEE; 
+}
+
+my @protos_to_test = ();
+
+push @protos_to_test, "0200" if $sslv2_0;
+push @protos_to_test, "0300" if $sslv3_0;
+push @protos_to_test, "0301" if $tlsv1_0;
+push @protos_to_test, "0302" if $tlsv1_1;
+push @protos_to_test, "0303" if $tlsv1_2;
+my $protos_to_test = join(",", map {get_protocol_name($_)} @protos_to_test);
+
+my @targets = ();
+if (defined($hostfile)) {
+	open HOSTS, "<$hostfile" or die "[E] Can't open $hostfile: $!\n";
+	while (<HOSTS>) {
+		chomp; chomp;
+		my $line = $_;
+		my $port = 443;
+		my $host = $line;
+		if ($line =~ /\s*(\S+):(\d+)\s*/) {
+			$host = $1;
+			$port = $2;
+		}
+		my $ip = resolve($host);
+		if (defined($ip)) {
+			push @targets, { ip => $ip, hostname => $host, port => $port };
+		} else {
+			print "[W] Unable to resolve host $host.  Ignoring line: $line\n";
+		}
+	}
+} else {
+	my $host = shift or die $usage;
+	my $port = 443;
+	if ($host =~ /\s*(\S+):(\d+)\s*/) {
+		$host = $1;
+		$port = $2;
+	}
+	my $ip = resolve($host);
+	unless (defined($ip)) {
+		die "[E] Can't resolve hostname $host\n";
+	}
+	push @targets, { ip => $ip, hostname => $host, port => $port };
+}
 
 # Most of the TLS cipher suites are listed on http://www.iana.org/assignments/tls-parameters/tls-parameters.xml
 my $ciphersuitenamestring = "
@@ -538,114 +659,245 @@ foreach my $line (split "\n", $ciphersuitenamestring) {
 		$numberofcc{$2} = uc $1;
 	}
 }
-my $starttime = time;
+
+# flush after every write
+$| = 1;
+
+my $global_starttime = time;
 printf "Starting ssl-cipher-enum v%s ( http://labs.portcullis.co.uk/application/ssl-cipher-suite-enum/ ) at %s\n", $VERSION, scalar(localtime);
-print "\n";
-print "Target: $host\n";
-print "IP:     $ip\n";
-print "Port:   $port\n";
-print "\n";
+printf "\n[+] Scanning %s hosts\n", scalar @targets;
+print Dumper \@targets if $debug > 0;
 
-protocol: foreach my $protocol ("0200", "0300", "0301", "0302", "0303") {
-	my $protocol_name = get_protocol_name($protocol);
-	print "\n[+] Testing protocol $protocol_name\n\n";
-	my $cc_supported = 0;
-	if ($protocol eq "0200") {
-		foreach my $ciphersuite (qw(000000 010080 020080 030080 040080 050080 060040 060140 0700c0 0701c0 080080 ff0800 ff0810 0000ff)) {
-			printf "[D] Checking Cipher Suite: %s %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
-			print "[+] Connecting to $host:$port\n" if $debug > 1;
-			my $socket = get_socket();
-			my $string = get_client_hello_v2($ciphersuite);	
-
-			# send client hello
-			print "[+] Sending:\n"  if $debug > 1;
-			hdump($string) if $debug > 1;
-			print $socket $string;
-			
-			# recv server hello (or alert).  first read length of packet
-			my $data;
-			$socket->recv($data,2);
-			print "[+] Received from Server :\n"  if $debug > 1;
-			hdump($data) if $debug > 1;
-			
-			my @data = split("", $data);
-			if (scalar(@data) > 0) {
-				my $length = ((ord($data[0]) & 0x7f) << 8) + ord($data[1]);
-				printf "[+] Initial length: %d\n", $length if $debug > 1;
-				my $data2;
-				$socket->recv($data2,$length);
-				print "[+] Received from Server :\n" if $debug > 1;
-				hdump($data2) if $debug > 1;
-				$data = $data . $data2;
-				@data = split("", $data);
-
-				printf "[+] Handshake message type (should be 4): %02x\n", ord($data[2]) if $debug > 1;
-				printf "[+] Protocol: %d.%d\n", ord($data[6]), ord($data[5]) if $debug > 1;
-				my $cs_len = sprintf "%02x%02x", ord($data[9]), ord($data[10]);
-				printf "[+] Cipher spec length (should be 3): %02x%02x\n", ord($data[9]), ord($data[10]) if $debug > 1;
-				if ($cs_len eq "0003") {
-					my $cc = sprintf "%02x%02x%02x", ord($data[-19]), ord($data[-18]), ord($data[-17]);
-					printf "[+] Cipher suite: %s [%02x%02x%02x]\n", get_cc_name($cc), ord($data[-19]), ord($data[-18]), ord($data[-17]);
-				} else {
-					print "[+] Unknown response.  Cipher spec length was 0\n";
-				}
-			} else {
-				printf "[+] Cipher suite not supported (truncated packet): %s, cipher suite %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
-			}
-		}
-	} else {
-		my @cc_todo_individually = ();
-		my @cc_todo_in_groups = ();
-
-		# Put the rarely-supported cipher suites into one group
-		# and the more commonly supported ones into another
-		foreach my $ciphersuite (map {sprintf("00%02x", $_), sprintf("c0%02x", $_); } (0..255)) {
-			my $cc_name = get_cc_name($ciphersuite);
-			if ($cc_name =~ /(UNKNOWN|PSK|GOST|KRB|NULL|anon|FZA|ADH)/) {
-				push @cc_todo_in_groups, $ciphersuite;
-			} else {
-				push @cc_todo_individually, $ciphersuite;
-			}
-		}
-
-		my $cc_chunk_size = 10;
-		my $protocol_supported = 1;
-		while (scalar @cc_todo_in_groups) {
-			my @cc_chunk = ();
-			chunk: for (1..$cc_chunk_size) {
-				if (scalar @cc_todo_in_groups) {
-					push @cc_chunk, pop @cc_todo_in_groups;
-				}
-			}
-			if (scalar @cc_chunk) {
-				my $supported = test_v3_ciphersuites($protocol, @cc_chunk);
-				if ($supported == 1) {
-					# one or more is valid.  so we try individually instead later
-					push @cc_todo_individually, @cc_chunk;
-				} elsif ($supported == 2) {
-					$protocol_supported = 0;
-					last;
-				} elsif ($supported == 0) {
-					# none are valid.  we saved time by not trying individually
-				}
-			}
-		}
-
-		if ($protocol_supported) {
-			foreach my $ciphersuite (@cc_todo_individually) {
-				my $supported = test_v3_ciphersuites($protocol, $ciphersuite);
-				if ($supported == 1) {
-					$cc_supported++;
-				}
-			}
-		}
-	}
-	printf "\n[+] %s %s cipher suites supported\n", $cc_supported, get_protocol_name($protocol);
+foreach my $target_href (@targets) {
+	scan_host($target_href->{hostname}, $target_href->{ip}, $target_href->{port});
 }
 
+print_section("Scan Complete");
+printf "[+] ssl-cipher-enum v%s completed at %s.  %s connections in %s secs.\n", $VERSION, scalar(localtime), $global_connection_count, get_runtime();
 print "\n";
-printf "[+] ssl-cipher-enum v%s completed after %s secs at %s\n", $VERSION, time - $starttime, scalar(localtime);
-print "\n";
+
+sub scan_host {
+	my ($host, $ip, $port) = @_;
+	print_section("Scan Info");
+	print "Target:    $host\n";
+	print "IP:        $ip\n";
+	print "Port:      $port\n";
+	print "Protocols: $protos_to_test\n";
+	printf "Scan Rate: %s\n", defined($global_rate) ? $global_rate . " connections/sec" : "unlimited";
+
+	$global_connection_count = 0; # need to reset for each host for accurate scan rate
+
+	protocol: foreach my $protocol (@protos_to_test) {
+		my $protocol_name = get_protocol_name($protocol);
+		print_section("Testing protocol $protocol_name");
+		my $cc_supported = 0;
+		my @supported_ciphersuites = ();
+		my $some_beast = 0;
+		my $most_beast = 0;
+		my $some_nofs = 0;
+		my $most_nofs = 0;
+		my $null_encryption = 0;
+		my $weak_encryption = 0;
+		my $anon_dh = 0;
+		if ($protocol eq "0200") {
+			foreach my $ciphersuite (qw(000000 010080 020080 030080 040080 050080 060040 060140 0700c0 0701c0 080080 ff0800 ff0810 0000ff)) {
+				my $supported = test_v2_ciphersuites($ip, $port, $protocol, $ciphersuite);
+				if (length($supported) == 6) {
+					$cc_supported++;
+					push @supported_ciphersuites, $supported;
+					if ($supported eq $ciphersuite) {
+						printf "[+] Cipher suite supported on $ip:$port: %s %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_warnings($protocol, $supported);
+					} else {
+						printf "[+] Cipher suite supported on $ip:$port:  %s %s, Probed for: %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_cc_name($ciphersuite), get_warnings($protocol, $supported);
+					}
+					my @warnings = get_warnings_array($protocol, $supported);
+					foreach my $warning (@warnings) {
+						$results{$warning} = {} unless defined($results{$warning});
+						$results{$warning}{$protocol} = {} unless defined($results{$warning}{$protocol});
+						$results{$warning}{$protocol}{$supported} = 1;
+					}
+					$results{"SUPPORTED"}->{$protocol}->{$supported} = 1;
+					if (vuln_to_beast($protocol, $supported)) {
+						$some_beast = 1;
+					}
+					if (uses_forward_secrecy($protocol, $supported)) {
+						$some_nofs = 1;
+					}
+					if (get_cc_name($supported) =~ /WITH_NULL/) {
+						$null_encryption = 1;
+					}
+					if (uses_weak_cipher($supported)) {
+						$weak_encryption = 1;
+					}
+					if (get_cc_name($supported) =~ /(DH_anon_WITH|ADH_WITH)/) {
+						$anon_dh = 1;
+					}
+				# Some servers close connection when an unsupported cipher suite is encountered
+				# Some reply
+				# And some do both, so we need to check again here in case we get a reply
+				}
+			}
+		} else {
+			my @cc_todo_individually = ();
+			my @cc_todo_in_groups = ();
+	
+			# Put the rarely-supported cipher suites into one group
+			# and the more commonly supported ones into another
+			foreach my $ciphersuite (map {sprintf("00%02x", $_), sprintf("c0%02x", $_); } (0..255)) {
+				my $cc_name = get_cc_name($ciphersuite);
+				if ($cc_name =~ /(UNKNOWN|PSK|GOST|KRB|NULL|anon|FZA|ADH)/) {
+					push @cc_todo_in_groups, $ciphersuite;
+				} else {
+					push @cc_todo_individually, $ciphersuite;
+				}
+			}
+	
+			my $cc_chunk_size = 10;
+			my $protocol_supported = 1;
+			ciphersuite: while (scalar @cc_todo_in_groups) {
+				my @cc_chunk = ();
+				chunk: for (1..$cc_chunk_size) {
+					if (scalar @cc_todo_in_groups) {
+						push @cc_chunk, pop @cc_todo_in_groups;
+					}
+				}
+				if (scalar @cc_chunk) {
+					my $supported = test_v3_ciphersuites($ip, $port, $protocol, @cc_chunk);
+					if (length($supported) == 4) {
+						# one or more is valid.  so we try individually instead later
+						push @cc_todo_individually, @cc_chunk;
+					} elsif ($supported == -2) {
+						$protocol_supported = 0;
+						last ciphersuite;
+					} elsif ($supported == -1) {
+						# none are valid.  we saved time by not trying individually
+					} else {
+						print "[W] Unexpected result from test_v3_ciphersuites()\n";
+					}
+				}
+			}
+	
+			if ($protocol_supported) {
+				ciphersuite: foreach my $ciphersuite (@cc_todo_individually) {
+					my $supported = test_v3_ciphersuites($ip, $port, $protocol, $ciphersuite);
+					if (length($supported) == 4) {
+						$cc_supported++;
+						push @supported_ciphersuites, $supported;
+						my @warnings = get_warnings_array($protocol, $supported);
+						foreach my $warning (@warnings) {
+							$results{$warning} = {} unless defined($results{$warning});
+							$results{$warning}{$protocol} = {} unless defined($results{$warning}{$protocol});
+							$results{$warning}{$protocol}{$supported} = 1;
+						}
+						$results{"SUPPORTED"}->{$protocol}->{$supported} = 1;
+						if ($supported eq $ciphersuite) {
+							printf "[+] Cipher suite supported on $ip:$port: %s %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_warnings($protocol, $supported);
+						} else {
+							printf "[+] Cipher suite supported on $ip:$port:  %s %s, Probed for: %s %s\n", get_protocol_name($protocol), get_cc_name($supported), get_cc_name($ciphersuite), get_warnings($protocol, $supported);
+						}
+						if (vuln_to_beast($protocol, $supported)) {
+							$some_beast = 1;
+						}
+						if (uses_forward_secrecy($protocol, $supported)) {
+							$some_nofs = 1;
+						}
+						if (get_cc_name($supported) =~ /WITH_NULL/) {
+							$null_encryption = 1;
+						}
+						if (uses_weak_cipher($supported)) {
+							$weak_encryption = 1;
+						}
+						if (get_cc_name($supported) =~ /(DH_anon_WITH|ADH_WITH)/) {
+							$anon_dh = 1;
+						}
+					# Some servers close connection when an unsupported cipher suite is encountered
+					# Some reply
+					# And some do both, so we need to check again here in case we get a reply
+					} elsif ($supported == -2) {
+						$protocol_supported = 0;
+						last ciphersuite;
+					}
+				}
+	
+				if (scalar @supported_ciphersuites) {
+					# Check perferred cipher suite
+					my $supported = test_v3_ciphersuites($ip, $port, $protocol, @supported_ciphersuites);
+					if (length($supported) == 4) {
+						printf "\n[+] Preferred %s cipher suite on $ip:$port: %s\n\n", get_protocol_name($protocol), get_cc_name($supported);
+						if (vuln_to_beast($protocol, $supported)) {
+							$most_beast = 1;
+						}
+						unless (uses_forward_secrecy($protocol, $supported)) {
+							$most_nofs = 1;
+						}
+					} elsif ($supported == -1) {
+						print "\n[W] Preffered cipher suite not found on $ip:$port.  This shouldn't happen!\n";
+					}
+				}
+			}
+		}
+		printf "[+] %s %s cipher suites supported\n", $cc_supported, get_protocol_name($protocol);
+		print "\n";
+		if ($most_beast) {
+			print "[V] $ip:$port - Most clients will be vulnerable to BEAST attack - if HTTPS service\n";
+		} elsif ($some_beast) {
+			print "[V] $ip:$port - Some clients could be vulnerable to BEAST attack - if HTTPS service\n";
+		}
+		if ($weak_encryption) {
+			print "[V] $ip:$port - Some connections might be protected with a weak (<128-bit) symmetric encryption key\n";
+		}
+		if ($null_encryption) {
+			print "[V] $ip:$port - Some connections might not be encrypted (NULL encryption cipher)\n";
+		}
+		if ($anon_dh) {
+			print "[V] $ip:$port - Server support a key-exchange algorithm that is vulnerable to man-in-the-middle attack (anonymous Diffie Hellman)\n";
+		}
+		if ($most_nofs) {
+			print "[V] $ip:$port - Most encrypted connections will not use forward secrecy\n";
+		} elsif ($some_nofs) {
+			print "[V] $ip:$port - Some encrypted connections may not have forward secrecy\n";
+		}
+		# TODO: sslv2 reneg dos, reneg mitm
+	}
+
+	# Print out human-readable summary
+	print "[+] Summary of support cipher suites for $ip:$port\n\n";
+	foreach my $proto (sort keys(%{$results{"SUPPORTED"}})) {
+		printf "%s:\n", get_protocol_name($proto);
+		if (scalar keys(%{$results{"SUPPORTED"}{$proto}}) == 0) {
+			print "* None\n";
+		} else {
+			foreach my $cc (sort keys(%{$results{"SUPPORTED"}{$proto}})) {
+				printf "* %s\n", get_cc_name_pretty($cc);
+			}
+		}
+		print "\n";
+	}
+	foreach my $section (sort keys(%results)) {
+		next if $section eq "SUPPORTED";
+		print "[+] Summary of weakness \"$section\" for $ip:$port\n\n";
+		foreach my $proto (sort keys(%{$results{$section}})) {
+			printf "%s:\n", get_protocol_name($proto);
+			if (scalar keys(%{$results{$section}{$proto}}) == 0) {
+				print "* None\n";
+			} else {
+				foreach my $cc (sort keys(%{$results{$section}{$proto}})) {
+					printf "* %s\n", get_cc_name_pretty($cc);
+				}
+			}
+			print "\n";
+		}
+	}
+}
+
+sub get_cc_name_pretty {
+	my ($ciphersuite) = @_; # in hex
+	my $ccname = "UNKNOWN_CIPHER_SUITE_NAME [$ciphersuite]";
+	if (defined($nameofcc{uc $ciphersuite})) {
+		$ccname = $nameofcc{uc $ciphersuite};
+	}
+	return $ccname;
+}
 
 sub get_cc_name {
 	my ($ciphersuite) = @_; # in hex
@@ -689,17 +941,17 @@ sub get_protocol_name {
 }
 
 sub get_client_hello_v2 {
-	my (@ciphersuites_hex) = @_;
+	my ($protocol, @ciphersuites_hex) = @_;
 	my $ciphersuites_hex = join("", @ciphersuites_hex);
 	my @packet_hex;
 	push @packet_hex, qw(80); # bit 1: 2 byte header; bit 2: no security escapes, bits 3-8: high length bits
-	push @packet_hex, sprintf("%02x", 0x1c + length($ciphersuites_hex) / 2);
+	push @packet_hex, sprintf("%02x", 0x19 + length($ciphersuites_hex) / 2);
 	push @packet_hex, qw(01); # client hello
-	push @packet_hex, qw(0002); # version 2.0
+	push @packet_hex, qw(0002); # version 2.0 - TODO use $protocol (reverse)
 	push @packet_hex, sprintf("%04x", length($ciphersuites_hex) / 2);
 	push @packet_hex, qw(0000); # session id length
 	push @packet_hex, qw(0010); # challenge length
-	push @packet_hex, $ciphersuites_hex . "001122"; #  TODO what's this 1122 bit?
+	push @packet_hex, $ciphersuites_hex;
 	my $r = "";
 	for (1..16) {
 		my $rand = sprintf "%02x", int(rand(255));
@@ -720,7 +972,6 @@ sub get_client_hello_v3 {
 	push @packet_hex, $protocol;
 	push @packet_hex, sprintf("%04x", 0x56 + length($ciphersuites_hex) / 2);
 	push @packet_hex, qw(01); # client hello
-	# push @packet_hex, qw(00 00 54); # length
 	push @packet_hex, sprintf("%06x", 0x52 + length($ciphersuites_hex) / 2);
 	push @packet_hex, $protocol;
 	push @packet_hex, qw(4f de d1 b9); # time
@@ -757,11 +1008,16 @@ sub get_client_hello_v3 {
 }
 
 sub get_socket {
+	my ($ip, $port) = @_;
+	if (defined($global_rate) and get_scan_rate() > $global_rate) {
+		select(undef, undef, undef, 0.1); # sleep
+	}
 	my $socket = new IO::Socket::INET (
 		PeerHost => $ip,
 		PeerPort => $port,
 		Proto => 'tcp',
 	) or die "ERROR in Socket Creation : $!\n";
+	$global_connection_count++;
 	return $socket;
 }
 
@@ -769,14 +1025,14 @@ sub get_socket {
 #  arg1: protocol e.g. "0301"
 #  arg2: list of cipher suites, e.g. ("0011", "C022")
 # returns:
-#  2 if server doesn't support the protocol
-#  1 if one of the supplied ciphersuites if valid
-#  0 if none are valid
+#  -2     if server doesn't support the protocol
+#  -1     if none are valid
+#  string if one of the supplied ciphersuites if valid, e.g. "C011"
 sub test_v3_ciphersuites {
-	my ($protocol, @ciphersuites) = @_;
+	my ($ip, $port, $protocol, @ciphersuites) = @_;
 	printf "[D] Checking Cipher Suites: %s %s\n", get_protocol_name($protocol), join(",", map { get_cc_name($_) } @ciphersuites) if $debug > 0;
-	print "[+] Connecting to $host:$port\n" if $debug > 1;
-	my $socket = get_socket();
+	print "[+] Connecting to $ip:$port\n" if $debug > 1;
+	my $socket = get_socket($ip, $port);
 	
 	my $string = get_client_hello_v3($protocol, @ciphersuites);
 	my $protocol_bin = $protocol;
@@ -807,13 +1063,13 @@ sub test_v3_ciphersuites {
 
 		if ($data[1] . $data[2] ne $protocol_bin) {
 			printf "[+] Protocol %s is not supported.  Skipping.\n", get_protocol_name($protocol);
-			return 2;
+			return -2;
 		}
 		if ($data[0] eq "\x15") {
 			if ($data[6] eq "\x28") {
 				printf "[+] Cipher suite NOT supported.  Probed for %s %s, Reply protocol: %s\n", get_protocol_name($protocol), $ccname, ord($data[1]) . "." . ord($data[2]) if $debug > 0;
 			} else {
-				printf "[+] Packet type 'Alert' for protocol %s cipher suite %s: %02x\n", $protocol, $ccname, ord($data[0]);
+				printf "[+] Packet type 'Alert' for cipher suite %s %s: %02x\n", get_protocol_name($protocol), get_cc_name($ccname), ord($data[0]);
 				printf "[+] Protocol: %d.%d\n", ord($data[1]), ord($data[2]) if $debug > 1;
 				printf "[+] Alert Level (2 is fatal): %02x\n", ord($data[5]) if $debug > 1;
 				printf "[+] Alert description (0x28 is Handshake failure): %02x\n", ord($data[6]) if $debug > 1;
@@ -824,19 +1080,241 @@ sub test_v3_ciphersuites {
 			my $ccpos = $sidlen + 44;
 			my $neg_cc = sprintf("%02x%02x",ord($data[$ccpos]), ord($data[$ccpos+1]));
 			my $neg_cc_name = get_cc_name($neg_cc);
-			printf "[+] Cipher suite supported.  Probed for: %s %s [%s], Negotiated: %s\n", get_protocol_name($protocol), $ccname, get_protocol_name(sprintf("%02x%02x", ord($data[1]), ord($data[2]))), $neg_cc_name;
 			printf "[+] packet type (should be 0x02 for Server Hello): %02x\n", ord($data[5]) if $debug > 1;
 			printf "[+] Cipher Suite: %02x%02x\n", ord($data[44]), ord($data[45]) if $debug > 1;
-			return 1;
+#			printf "[+] Server time: %02x%02x%02x%02x\n", ord($data[11]), ord($data[12]), ord($data[13]), ord($data[14]);
+#			printf "[+] Compression: %02x\n", ord($data[46]);
+#			my $exlen = (ord($data[47]) << 8) + ord($data[48]);
+#			printf "[+] Extension length: 0x%02x%02x (%d)\n", ord($data[47]), ord($data[48]), $exlen;
+#			my @exdata;
+#			if ($exlen) {
+#				@exdata = splice(@data, 49, -1);
+#			}
+#			while (@exdata) {
+#				my $extype_h .= shift @exdata;
+#				my $extype_l .= shift @exdata;
+#				my $len_h .= shift @exdata;
+#				my $len_l .= shift @exdata;
+#				my $len_of_len = (ord($len_h) << 8) + ord($len_l);
+#				my $len = 0;
+#				for (1..$len_of_len) {
+#					ord($len) << 8;
+#					my $l = shift @exdata;
+#					$len += $len;
+#				}
+#				my $exdata = "";
+#				for (1..$len) {
+#					$exdata .= shift @exdata;
+#				}
+#				printf "[+] Extension: Type %02x%02x, Length of length: %d, Lengh: %d\n", ord($extype_h), ord($extype_l), $len_of_len, $len;
+#			}
+		
+			return $neg_cc;
 		} else {
 			printf "[+] Packet type (should be 0x16) for protocol %d.%d, cipher suite %s: %02x\n", ord($data[1]), ord($data[2]), $ccname, ord($data[0]);
 		printf "[+] Protocol: %d.%d\n", ord($data[1]), ord($data[2]);
 			printf "[+] packet type (should be 0x02 for Server Hello): %02x\n", ord($data[5]);
 			printf "[+] Protocol2: %d.%d\n", ord($data[9]), ord($data[10]);
-			printf "[+] Server time: %02x%02x%02x%02x\n", ord($data[11]), ord($data[12]), ord($data[13]), ord($data[14]);
 			printf "[+] Cipher Suite: %02x%02x\n", ord($data[44]), ord($data[45]);
-			printf "[+] Compression: %02x\n", ord($data[46]);
 		}
 	}
+	return -1;
+}
+
+# test_v2_cipher_suites:
+#  arg1: protocol e.g. "0200"
+#  arg2: list of cipher suites, e.g. ("010011", "01C022")
+# returns:
+#  -2     if server doesn't support the protocol NOT IMPLEMENTED
+#  -1     if none are valid
+#  string if one of the supplied ciphersuites if valid, e.g. "01C011"
+sub test_v2_ciphersuites {
+	my ($ip, $port, $protocol, @ciphersuites) = @_;
+	printf "[D] Checking Cipher Suites: %s %s\n", get_protocol_name($protocol), join(",", map { get_cc_name($_) } @ciphersuites) if $debug > 0;
+	# printf "[D] Checking Cipher Suite: %s %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
+	print "[+] Connecting to $ip:$port\n" if $debug > 1;
+	my $socket = get_socket($ip, $port);
+	my $string = get_client_hello_v2($protocol, @ciphersuites);	
+
+	# send client hello
+	print "[+] Sending:\n"  if $debug > 1;
+	hdump($string) if $debug > 1;
+	print $socket $string;
+	
+	# recv server hello (or alert).  first read length of packet
+	my $data;
+	$socket->recv($data,2);
+	print "[+] Received from Server :\n"  if $debug > 1;
+	hdump($data) if $debug > 1;
+	
+	my @data = split("", $data);
+	if (scalar(@data) > 0) {
+		my $length = ((ord($data[0]) & 0x7f) << 8) + ord($data[1]);
+		printf "[+] Initial length: %d\n", $length if $debug > 1;
+		my $data2;
+		$socket->recv($data2,$length);
+		print "[+] Received from Server :\n" if $debug > 1;
+		hdump($data2) if $debug > 1;
+		$data = $data . $data2;
+		@data = split("", $data);
+
+		if ($length > 20) {
+			printf "[+] Handshake message type (should be 4): %02x\n", ord($data[2]) if $debug > 1;
+			printf "[+] Protocol: %d.%d\n", ord($data[6]), ord($data[5]) if $debug > 1;
+			my $cs_len = sprintf "%02x%02x", ord($data[9]), ord($data[10]);
+			printf "[+] Cipher spec length (should be 3): %02x%02x\n", ord($data[9]), ord($data[10]) if $debug > 1;
+			if ($cs_len eq "0003") {
+				my $cc = sprintf "%02x%02x%02x", ord($data[-19]), ord($data[-18]), ord($data[-17]);
+				return sprintf "%02x%02x%02x", ord($data[-19]), ord($data[-18]), ord($data[-17]);
+			} else {
+				print "[+] Unknown response.  Cipher spec length was 0\n" if $debug > 0;
+			}
+		} else {
+			print "[+] Short response received.  Not processing\n" if $debug > 1;
+		}
+	} else {
+		# printf "[+] Cipher suite not supported (truncated packet): %s, cipher suite %s [%s]\n", get_protocol_name($protocol), get_cc_name($ciphersuite), $ciphersuite if $debug > 0;
+		printf "[+] Cipher suite not supported (truncated packet): %s\n" if $debug > 0;
+	}
+	return -1;
+}
+
+sub print_section {
+	my ($string) = @_;
+	print "\n=== $string ===\n\n";
+}
+
+sub resolve {
+	my $hostname = shift;
+	print "[D] Resolving $hostname\n" if $debug > 0;
+	my $ip =  gethostbyname($hostname);
+	if (defined($ip)) {
+		return inet_ntoa($ip);
+	} else {
+		return undef;
+	}
+}
+
+sub get_warnings {
+	my ($protocol, $cc) = @_;
+	return join ",", get_warnings_array($protocol, $cc);
+}
+
+sub get_warnings_array {
+	my ($protocol, $cc) = @_;
+	my $cc_name = get_cc_name($cc);
+	my $protocol_name = get_protocol_name($protocol);
+	my @warnings = ();
+	push @warnings, "SSL2_INSEC" if $protocol =~ /^02/;
+	push @warnings, "BEAST"      if vuln_to_beast($protocol, $cc);
+	push @warnings, "NO_PFS"     unless uses_forward_secrecy($protocol, $cc);
+	push @warnings, "NULL_ENC"   if $cc_name =~ /(WITH_NULL)/;
+	push @warnings, "WEAK_ENC"   if uses_weak_cipher($cc);
+	push @warnings, "ANON_DH"    if $cc_name =~ /(DH_anon_WITH|ADH_WITH)/;
+	return @warnings;
+}
+
+sub vuln_to_beast {
+	my ($protocol, $cc) = @_;
+	my $cc_name = get_cc_name($cc);
+	my $protocol_name = get_protocol_name($protocol);
+	if ($protocol_name !~ /TLSv1\.[12]/ and $cc_name !~ /(RC4|NULL)/) {
+		return 1;
+	}
+	
 	return 0;
 }
+
+sub uses_weak_cipher {
+	my $cc = shift;
+	my $cc_name = get_cc_name($cc);
+	if ($cc_name =~ /EXPORT_WITH/) {
+		return 1;
+	}
+	
+	if ($cc_name =~ /WITH_DES/ and $cc_name !~ /CBC3/) {
+		return 1;
+	}
+
+	if ($cc_name =~ /EXPORT40/) {
+		return 1;
+	}
+
+	if ($cc_name =~ /DES_64_/) {
+		return 1;
+	}
+
+	return 0;
+}
+
+sub get_runtime {
+	return time - $global_starttime;
+}
+
+sub get_scan_rate {
+	my $runtime = get_runtime();
+
+	# avoid divide by zero
+	if ($runtime == 0) {
+		$runtime = 0.1;
+	}
+
+	return $global_connection_count / $runtime;
+}
+# Notes on PFS and RSA:
+#  RSA is sometimes used for the key exchange.  This lacks PFS:
+#   0x000A  TLS_RSA_WITH_3DES_EDE_CBC_SHA   [RFC5246]
+#
+#  Other time RSA is used for signing the key exchange.  This is not relevant to PFS:
+#   0x000E  TLS_DH_RSA_EXPORT_WITH_DES40_CBC_SHA    [RFC4346]
+#   0x0014  TLS_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA   [RFC4346]
+#
+# We therefore can't simply regex /RSA/
+sub uses_forward_secrecy {
+	my ($protocol, $cc) = @_;
+	my $cc_name = get_cc_name($cc);
+	if ($cc_name =~ /^RSA/) {
+		return 0;
+	}
+
+	# All SSLv2 protocols use RSA for key exchange, but don't contain
+	# the string "RSA" in the cipher suite name	
+	if ($protocol =~ /^02/) {
+		return 0;
+	}
+
+	return 1;
+}
+
+# Perl Cookbook, Tie Example: Multiple Sink Filehandles
+package Tie::Tee;
+
+sub TIEHANDLE {
+	my $class = shift;
+	my $handles = [@_];
+	bless $handles, $class;
+	return $handles;
+}
+
+sub PRINT {
+	my $href = shift;
+	my $handle;
+	my $success = 0;
+	foreach $handle (@$href) {
+		$success += print $handle @_;
+	}
+	return $success == @$href;
+}
+
+sub PRINTF {
+	my $href = shift;
+	my $handle;
+	my $success = 0;
+	foreach $handle (@$href) {
+		$success += printf $handle @_;
+	}
+	return $success == @$href;
+}
+
+1;
+

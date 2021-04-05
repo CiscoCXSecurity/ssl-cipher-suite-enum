@@ -1,4 +1,27 @@
 
+2012-07-08 ssl-cipher-suite-enum v0.4
+
+* Added "--outfile file" option to log output to file
+* Added options --sslv2 --sslv2 --tlsv1 --tlsv1_1 --tlsv1_2 to test only
+  the required SSL protocols
+* Added "--file file" option to read targets from a file
+* Added "--rate n" option to limit scan speed to n connection/sec
+* Prints stats on connections / second
+* Output is more greppable
+* Identification of cipher suites using weak symmertic encryption
+* Identification of cipher suites using null encryption
+* Identification of cipher suites not providing forward secrecy
+* Identification of cipher suites vulnerable to BEAST attack
+* Identification of cipher suites using SSLv2
+* Identification of cipher suites anonymous Diffie Hellman key exchange
+* Added human-readable summary sections for weaknesses identified
+* Bug fix: Servers returning "0x0000" dealt with correctly
+* Altered way port number is specified from "ip port" to "ip:port"
+* More verbose help message
+* Beautified output
+* Improved SSLv2 probe
+* Identifies preferred cipher suite
+
 2012-07-01 ssl-cipher-suite-enum v0.2
 
 * Lowercased cipher suite (hex) numbers for consistency.
