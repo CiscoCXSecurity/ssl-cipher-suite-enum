@@ -1,3 +1,8 @@
+2015-10-29 ssl-cipher-suite-enum v1.0.1
+
+* Included check for FREAK issue
+* Included check for Logjam issue
+* Included check for Meet-in-the-middle vulnerability.
 
 2014-10-15 ssl-cipher-suite-enum v1.0.0
 
